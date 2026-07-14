@@ -1,0 +1,25 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: deps
+        run: pip install numpy
+      - name: build
+        run: make
+      - name: validate C engine (vs NumPy reference, all dtypes)
+        run: make test
+  test-mlx:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: deps
+        run: pip install numpy "mlx[cpu]"
+      - name: build
+        run: make
+      - name: validate MLX engine (CPU backend, all dtypes)
+        run: make test-mlx

@@ -1,0 +1,68 @@
+{
+  "arch": "gpt-oss",
+  "hidden": 2880,
+  "n_layers": 24,
+  "n_heads": 64,
+  "n_kv_heads": 8,
+  "head_dim": 64,
+  "vocab": 201088,
+  "norm_eps": 1e-05,
+  "moe": {
+    "experts": 32,
+    "top_k": 4,
+    "ffn": 2880,
+    "act": "swiglu_clamp",
+    "alpha": 1.702,
+    "limit": 7.0
+  },
+  "attn": {
+    "layer_types": [
+      "sliding_attention",
+      "full_attention",
+      "sliding_attention",
+      "full_attention",
+      "sliding_attention",
+      "full_attention",
+      "sliding_attention",
+      "full_attention",
+      "sliding_attention",
+      "full_attention",
+      "sliding_attention",
+      "full_attention",
+      "sliding_attention",
+      "full_attention",
+      "sliding_attention",
+      "full_attention",
+      "sliding_attention",
+      "full_attention",
+      "sliding_attention",
+      "full_attention",
+      "sliding_attention",
+      "full_attention",
+      "sliding_attention",
+      "full_attention"
+    ],
+    "sliding_window": 128,
+    "sinks": true,
+    "scale": 0.125
+  },
+  "rope": {
+    "theta": 150000.0,
+    "yarn": {
+      "factor": 32.0,
+      "beta_fast": 32.0,
+      "beta_slow": 1.0,
+      "orig_ctx": 4096,
+      "truncate": false
+    }
+  },
+  "max_ctx": 131072,
+  "tokenizer": {
+    "template": "harmony",
+    "stop_tokens": [
+      "<|return|>",
+      "<|call|>"
+    ],
+    "eos_token_id": 200002
+  }
+}
