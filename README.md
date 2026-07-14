@@ -164,10 +164,18 @@ python3 tools/verify_mxfp4.py openai/gpt-oss-20b        # decode vs transformers
 python3 tools/validate_hf.py openai/gpt-oss-20b models/gpt-oss-20b   # logits vs transformers
 ```
 
-Honest status: the engine is validated bit-carefully against the NumPy
-reference; end-to-end agreement with `transformers` on the full 120B has
-to be confirmed on hardware that can hold the reference model. If
-`verify_mxfp4.py` or `validate_hf.py` fail for you, please open an issue.
+midge's MXFP4 decoding convention (nibble order, FP4 value table, e8m0
+scale semantics, block orientation) has additionally been verified
+**bit-exactly** against `transformers`' official dequantizer
+(`integrations/mxfp4._convert_moe_packed_tensors`) and cross-checked
+against OpenAI's reference implementation (`gpt_oss/torch/model.py`) —
+same activation clamps, YaRN correction range, sink softmax and
+sliding-window semantics.
+
+Honest status: everything above runs on synthetic weights. End-to-end
+agreement with `transformers` on the real released checkpoints is a
+one-command spot check on your machine (`validate_hf.py`); if it or
+`verify_mxfp4.py` fail for you, please open an issue.
 
 ## Repository layout
 
