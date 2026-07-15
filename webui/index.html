@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>midge</title>
+<style>
+:root{
+  --bg:#141a22; --panel:#1b232e; --panel2:#212b38; --line:#2c3947;
+  --ink:#dee7ef; --mut:#7b8a99; --amber:#e8a33d; --amber2:#f2c069;
+  --moss:#7fb069; --rust:#d06c5c;
+  --mono:ui-monospace,'SF Mono','Cascadia Mono',Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 var(--sans);
+     min-height:100vh;display:flex;flex-direction:column;align-items:center}
+main{width:min(720px,94vw);padding:0 0 48px}
+header{width:min(720px,94vw);display:flex;align-items:baseline;gap:12px;
+       padding:28px 0 20px;border-bottom:1px solid var(--line);margin-bottom:24px}
+.wordmark{font:600 26px var(--mono);letter-spacing:-.5px}
+.wordmark .wing{color:var(--amber)}
+.tag{color:var(--mut);font-size:13px}
+#statusline{margin-left:auto;font:12px var(--mono);color:var(--mut)}
+#statusline b{color:var(--moss);font-weight:600}
+h2{font:600 13px var(--mono);text-transform:uppercase;letter-spacing:.12em;
+   color:var(--mut);margin:26px 0 12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+      padding:16px 18px;margin-bottom:12px}
+.card.pick{cursor:pointer;transition:border-color .15s}
+.card.pick:hover,.card.pick:focus-visible{border-color:var(--amber)}
+.card.pick.sel{border-color:var(--amber);background:var(--panel2)}
+.mrow{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.mname{font:600 16px var(--mono)}
+.badge{font:11px var(--mono);color:var(--bg);background:var(--amber);
+       border-radius:3px;padding:1px 6px}
+.badge.ok{background:var(--moss)}
+.mmeta{color:var(--mut);font-size:13px;margin-top:4px}
+.mnum{font-family:var(--mono);color:var(--ink)}
+.warn{color:var(--rust)}
+button{font:600 14px var(--sans);background:var(--amber);color:#20180a;
+       border:0;border-radius:6px;padding:10px 18px;cursor:pointer}
+button:hover{background:var(--amber2)}
+button:disabled{background:var(--line);color:var(--mut);cursor:default}
+button.ghost{background:transparent;color:var(--mut);border:1px solid var(--line)}
+button.ghost:hover{color:var(--ink);border-color:var(--mut)}
+.actions{display:flex;gap:10px;margin-top:16px;align-items:center}
+/* flight log */
+.steps{list-style:none}
+.steps li{display:flex;gap:12px;align-items:center;padding:7px 0;
+          font:14px var(--mono);color:var(--mut)}
+.steps .dot{width:10px;height:10px;border-radius:50%;background:var(--line);flex:none}
+.steps .running .dot{background:var(--amber);animation:pulse 1.2s ease-in-out infinite}
+.steps .done{color:var(--ink)} .steps .done .dot{background:var(--moss)}
+.steps .failed{color:var(--rust)} .steps .failed .dot{background:var(--rust)}
+@keyframes pulse{50%{opacity:.35}}
+@media (prefers-reduced-motion: reduce){.steps .running .dot{animation:none}}
+.meter{height:6px;background:var(--line);border-radius:3px;margin:12px 0;overflow:hidden}
+.meter div{height:100%;background:var(--amber);width:0;transition:width .6s}
+#log{background:#10151c;border:1px solid var(--line);border-radius:6px;
+     font:12px/1.5 var(--mono);color:var(--mut);padding:12px;height:220px;
+     overflow-y:auto;white-space:pre-wrap;word-break:break-all}
+#jobbytes{font:12px var(--mono);color:var(--mut)}
+/* chat */
+#msgs{display:flex;flex-direction:column;gap:12px;min-height:200px;
+      max-height:52vh;overflow-y:auto;padding:4px 2px}
+.msg{max-width:88%;padding:10px 14px;border-radius:8px;white-space:pre-wrap}
+.msg.u{align-self:flex-end;background:var(--panel2);border:1px solid var(--line)}
+.msg.a{align-self:flex-start;background:var(--panel);border:1px solid var(--line)}
+.msg .think{display:block;color:var(--mut);font-size:13px;border-left:2px solid var(--line);
+            padding-left:8px;margin-bottom:6px}
+.chatbar{display:flex;gap:8px;margin-top:12px}
+.chatbar input{flex:1;background:var(--panel);border:1px solid var(--line);
+  border-radius:6px;color:var(--ink);font:15px var(--sans);padding:10px 12px}
+.chatbar input:focus{outline:1px solid var(--amber)}
+.hint{color:var(--mut);font-size:12px;margin-top:8px;font-family:var(--mono)}
+.hidden{display:none}
+a{color:var(--amber2)}
+:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+</style>
+</head>
+<body>
+<header>
+  <div class="wordmark">midge<span class="wing">.·</span></div>
+  <div class="tag">tiny engine, immense models</div>
+  <div id="statusline">connecting…</div>
+</header>
+<main>
+  <section id="setup">
+    <h2>1 · Choose a model</h2>
+    <div id="cards"></div>
+    <div class="actions">
+      <button id="start" disabled>Start download &amp; setup</button>
+      <span class="hint" id="diskhint"></span>
+    </div>
+  </section>
+
+  <section id="progress" class="hidden">
+    <h2>2 · Setup in flight</h2>
+    <div class="card">
+      <ul class="steps" id="steps"></ul>
+      <div class="meter"><div id="bar"></div></div>
+      <div id="jobbytes"></div>
+    </div>
+    <div id="log" aria-live="polite"></div>
+    <div class="actions">
+      <button id="retry" class="ghost hidden">Resume setup</button>
+    </div>
+  </section>
+
+  <section id="chatsec" class="hidden">
+    <h2>3 · Chat</h2>
+    <div class="card">
+      <div id="msgs"></div>
+      <div class="chatbar">
+        <input id="chatin" placeholder="Message the model…" autocomplete="off">
+        <button id="send">Send</button>
+      </div>
+      <div class="hint" id="apihint"></div>
+    </div>
+  </section>
+</main>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+let state = null, picked = null, servePort = null;
+
+async function api(path, body){
+  const r = await fetch(path, body ? {method:"POST", body: JSON.stringify(body),
+    headers:{"Content-Type":"application/json"}} : undefined);
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || r.status);
+  return d;
+}
+
+function renderCards(){
+  const local = new Set(state.models.map(m => m.name));
+  $("cards").innerHTML = "";
+  for (const m of state.catalog){
+    const ready = local.has(m.name);
+    const el = document.createElement("div");
+    el.className = "card pick" + (picked === m.name ? " sel" : "");
+    el.tabIndex = 0;
+    const fits = state.free_disk_gb > m.disk_gb + 5;
+    el.innerHTML = `
+      <div class="mrow"><span class="mname">${m.name}</span>
+        ${m.recommended ? '<span class="badge">recommended</span>' : ""}
+        ${ready ? '<span class="badge ok">ready</span>' : ""}</div>
+      <div class="mmeta">${m.params} · needs <span class="mnum">${m.disk_gb} GB</span> disk
+        ${fits ? "" : ' <span class="warn">— not enough free space</span>'}<br>${m.notes}</div>`;
+    el.onclick = el.onkeydown = ev => {
+      if (ev.type === "keydown" && ev.key !== "Enter" && ev.key !== " ") return;
+      picked = m.name; renderCards();
+      $("start").disabled = false;
+      $("start").textContent = ready ? `Chat with ${m.name}` : "Start download & setup";
+    };
+    $("cards").appendChild(el);
+  }
+  $("diskhint").textContent = `${state.free_disk_gb} GB free on disk`;
+}
+
+async function refresh(){
+  state = await api("/api/state");
+  $("statusline").innerHTML =
+    (state.engine_built ? "engine <b>built</b>" : "engine not built") +
+    (state.server ? ` · serving <b>${state.server.model}</b> :${state.server.port}` : "");
+  renderCards();
+  if (state.job && !state.job.done) { showProgress(); pollJob(); }
+  if (state.server) { servePort = state.server.port; showChat(state.server.model); }
+}
+
+function showProgress(){ $("progress").classList.remove("hidden"); }
+
+function renderJob(j){
+  $("steps").innerHTML = j.steps.map(s =>
+    `<li class="${s.status}"><span class="dot"></span>${s.name}` +
+    (s.status === "done" ? " ✓" : s.status === "failed" ? " ✗" : "") + "</li>").join("");
+  $("bar").style.width = j.pct + "%";
+  $("jobbytes").textContent = j.written_gb > 0 ?
+    `${j.written_gb} GB written to models/${j.model}` : "";
+  const log = $("log");
+  log.textContent = (j.log || []).join("\n");
+  log.scrollTop = log.scrollHeight;
+  $("retry").classList.toggle("hidden", !j.error);
+}
+
+async function pollJob(){
+  const j = await api("/api/job");
+  renderJob(j);
+  if (!j.done) return setTimeout(pollJob, 1200);
+  if (!j.error){ await refresh(); launchServe(j.model); }
+}
+
+async function launchServe(model){
+  try{
+    const r = await api("/api/serve", {model});
+    servePort = r.port;
+    showChat(model);
+  } catch(e){ alert("could not start server: " + e.message); }
+}
+
+function showChat(model){
+  $("chatsec").classList.remove("hidden");
+  $("apihint").textContent =
+    `agents & apps: OpenAI-compatible API at http://127.0.0.1:${servePort}/v1 (model "${model}")`;
+  $("chatin").focus();
+}
+
+const history = [];
+async function send(){
+  const text = $("chatin").value.trim();
+  if (!text || !servePort) return;
+  $("chatin").value = ""; $("send").disabled = true;
+  history.push({role:"user", content:text});
+  addMsg("u").textContent = text;
+  const a = addMsg("a"), think = document.createElement("span");
+  think.className = "think"; const body = document.createElement("span");
+  a.append(think, body);
+  try{
+    const r = await fetch(`http://127.0.0.1:${servePort}/v1/chat/completions`, {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({model:"midge", stream:true, messages:history})});
+    const rd = r.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for(;;){
+      const {value, done} = await rd.read();
+      if (done) break;
+      buf += dec.decode(value, {stream:true});
+      let i;
+      while((i = buf.indexOf("\n\n")) >= 0){
+        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 2);
+        if (!line.startsWith("data:")) continue;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") continue;
+        const d = JSON.parse(data).choices?.[0]?.delta || {};
+        if (d.reasoning_content) think.textContent += d.reasoning_content;
+        if (d.content) body.textContent += d.content;
+        $("msgs").scrollTop = $("msgs").scrollHeight;
+      }
+    }
+    history.push({role:"assistant", content: body.textContent});
+    if (!think.textContent) think.remove();
+  } catch(e){ body.textContent = "⚠ " + e.message; }
+  $("send").disabled = false; $("chatin").focus();
+}
+function addMsg(cls){
+  const el = document.createElement("div");
+  el.className = "msg " + cls;
+  $("msgs").appendChild(el);
+  $("msgs").scrollTop = $("msgs").scrollHeight;
+  return el;
+}
+
+$("start").onclick = async () => {
+  const ready = state.models.some(m => m.name === picked);
+  if (ready) return launchServe(picked);
+  try{
+    await api("/api/setup", {model: picked});
+    showProgress(); pollJob();
+  } catch(e){ alert(e.message); }
+};
+$("retry").onclick = async () => {
+  await api("/api/setup", {model: state.job.model});
+  $("retry").classList.add("hidden"); pollJob();
+};
+$("send").onclick = send;
+$("chatin").addEventListener("keydown", e => { if (e.key === "Enter") send(); });
+
+refresh().catch(e => $("statusline").textContent = "⚠ " + e.message);
+</script>
+</body>
+</html>

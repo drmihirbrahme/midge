@@ -268,9 +268,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
+        # SSE bodies have no length framing: close delimits the stream
+        self.send_header("Connection", "close")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
+        self.close_connection = True
 
     def _sse(self, obj):
         self.wfile.write(b"data: " + json.dumps(obj).encode() + b"\n\n")
@@ -280,6 +282,15 @@ class Handler(BaseHTTPRequestHandler):
         print(f"[serve] {self.address_string()} {fmt % a}", file=sys.stderr)
 
     # -- routes --------------------------------------------------------
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers",
+                         "Content-Type, Authorization")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self):
         if self.path == "/health":
             return self._json(200, {"status": "ok",

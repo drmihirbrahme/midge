@@ -198,6 +198,9 @@ def main():
     sv = sub.add_parser("serve", help="OpenAI-compatible local API server",
                         add_help=False)
 
+    u = sub.add_parser("ui", help="web interface: download, convert, chat",
+                       add_help=False)
+
     pl = sub.add_parser("plan", help="RAM/storage/IO math")
     pl.add_argument("model_dir", help="model dir or spec.json")
     pl.add_argument("--experts", default="mxfp4",
@@ -210,6 +213,9 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "serve":
         from serve import main as serve_main
         return serve_main(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == "ui":
+        from ui import main as ui_main
+        return ui_main(sys.argv[2:])
     args = ap.parse_args()
     if args.cmd == "chat":
         cmd_chat(args)

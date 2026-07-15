@@ -1,0 +1,20 @@
+{
+  "models": [
+    {
+      "name": "gpt-oss-20b",
+      "hf_repo": "openai/gpt-oss-20b",
+      "spec": "specs/gpt-oss-20b.json",
+      "params": "21B total · 3.6B active",
+      "recommended": true,
+      "notes": "Best first model: ~12 GB on disk, comfortable on 8 GB RAM."
+    },
+    {
+      "name": "gpt-oss-120b",
+      "hf_repo": "openai/gpt-oss-120b",
+      "spec": "specs/gpt-oss-120b.json",
+      "params": "117B total · 5.1B active",
+      "recommended": false,
+      "notes": "~62 GB on disk; needs ~75 GB free during conversion. Slow but mighty."
+    }
+  ]
+}

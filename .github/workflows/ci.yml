@@ -15,6 +15,8 @@ jobs:
         run: make test
       - name: validate OpenAI-compatible server
         run: pip install tokenizers openai && make test-server
+      - name: validate onboarding interface
+        run: make test-ui
   test-mlx:
     runs-on: ubuntu-latest
     steps:

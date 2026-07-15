@@ -79,6 +79,23 @@ pip install mlx
 
 ## Usage
 
+### The easy way: the interface
+
+```bash
+./midge ui
+```
+
+opens a local web app that handles everything: pick a model from the
+catalog (storage needs are shown against your free disk), watch the
+Hugging Face download and conversion stream by with live progress, the
+engine builds itself at the end, and a chat panel opens — backed by the
+same OpenAI-compatible server agents connect to. Interrupted downloads
+resume with one click. New models are added by dropping an entry into
+`specs/catalog.json` (plus a spec), which is the base for upcoming
+model choices.
+
+Everything below is the same pipeline as individual commands.
+
 ### 1. Convert a checkpoint
 
 ```bash

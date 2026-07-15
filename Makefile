@@ -27,10 +27,13 @@ test: midged
 clean:
 	rm -f midged
 
-.PHONY: all test test-mlx test-server clean
+.PHONY: all test test-mlx test-server test-ui clean
 
 test-mlx: midged
 	python3 tools/validate_mlx.py
 
 test-server: midged
 	python3 tools/validate_server.py
+
+test-ui:
+	python3 tools/validate_ui.py
