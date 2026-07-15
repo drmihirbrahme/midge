@@ -17,6 +17,7 @@
  *           "gen: N"           generate up to N tokens from current context
  *           "tf: 1 2 3"        teacher-force; print last-position logits
  *           "tfall: 1 2 3"     teacher-force; print logits at every position
+ *           "set: T P [seed]"  retune sampling (temp/top-p) keeping context
  *   stdout: "T <id>"           one generated token
  *           "L <v0> <v1> ..."  logits row
  *           "DONE <prompt_toks> <gen_toks> <seconds> <expert_loads>"
@@ -519,6 +520,16 @@ int main(int argc, char **argv) {
     int prompt_toks = 0;
     while (getline(&line, &cap, stdin) > 0) {
         char *nl = strchr(line, '\n'); if (nl) *nl = 0;
+        if (!strncmp(line, "set:", 4)) {
+            /* "set: <temp> <topp> [seed]" — retune sampling, keep context */
+            char *p = line + 4;
+            double t = strtod(p, &p), tp = strtod(p, &p);
+            temp = (float)t; topp = (float)tp;
+            while (*p == ' ') p++;
+            if (*p) rng_state = strtoull(p, NULL, 10) | 1ull;
+            printf("OK set\n"); fflush(stdout);
+            continue;
+        }
         if (!strncmp(line, "ids:", 4) || !strncmp(line, "tf:", 3) || !strncmp(line, "tfall:", 6)) {
             int tf = line[0] == 't';
             int tfall = !strncmp(line, "tfall:", 6);

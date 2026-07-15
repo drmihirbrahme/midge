@@ -135,6 +135,32 @@ The MLX engine reads the same model directory — nothing to re-convert:
 Budget roughly: dense (~2 GiB at 8-bit for gpt-oss) + cache + a couple
 of GiB for the OS.
 
+### 5. Serve an OpenAI-compatible API (for agents and apps)
+
+```bash
+./midge serve models/gpt-oss-20b --port 8420 --preload-gb 4
+```
+
+exposes `/v1/chat/completions` (streaming and non-streaming),
+`/v1/completions` and `/v1/models`, so anything that speaks the OpenAI
+API — agent frameworks, IDE assistants, the official client libraries —
+can use midge as a local backend:
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://127.0.0.1:8420/v1", api_key="midge")
+r = client.chat.completions.create(model="midge", stream=True,
+        messages=[{"role": "user", "content": "hello"}])
+```
+
+Notes for slow hardware: use streaming (clients see progress instead of
+timing out); one request runs at a time (others queue); the model's
+"analysis" channel is returned as `reasoning_content`. The server keeps
+the engine's context across requests — an agent loop that appends
+messages only pays prefill for the *new* turn, not the whole
+conversation, which matters a great deal at CPU prefill speeds. Edited
+or divergent histories transparently reset the context.
+
 ### Troubleshooting
 
 * **Slow first replies** — cold experts are being read from disk;

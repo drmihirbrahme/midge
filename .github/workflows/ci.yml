@@ -13,6 +13,8 @@ jobs:
         run: make
       - name: validate C engine (vs NumPy reference, all dtypes)
         run: make test
+      - name: validate OpenAI-compatible server
+        run: pip install tokenizers openai && make test-server
   test-mlx:
     runs-on: ubuntu-latest
     steps:

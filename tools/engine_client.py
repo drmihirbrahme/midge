@@ -1,0 +1,111 @@
+"""engine_client — shared wrapper around the midged subprocess.
+
+Speaks the engine's line protocol (ids:/gen:/quit -> OK/T/DONE) and adds
+the bookkeeping callers need: the pending-stop-token rule (a sampled
+stop token is printed but never forwarded, so it must be resent at the
+start of the next prefill), chunked generation (so callers can stop
+early between chunks, e.g. on a stop string), and restart() for
+resetting context (the engine itself is append-only).
+
+Used by the ./midge CLI and by tools/serve.py.
+"""
+from __future__ import annotations
+import os
+import subprocess
+
+
+class EngineError(RuntimeError):
+    pass
+
+
+class EngineProc:
+    def __init__(self, exe: str, model_dir: str, ctx: int, temp: float,
+                 topp: float, seed: int, stop_ids, preload_gb: float = 0):
+        if not os.path.exists(exe):
+            raise EngineError("engine not built — run `make` first")
+        self._args = [exe, model_dir, "--ctx", str(ctx), "--temp", str(temp),
+                      "--topp", str(topp), "--seed", str(seed)]
+        if stop_ids:
+            self._args += ["--stop", ",".join(map(str, stop_ids))]
+        if preload_gb:
+            self._args += ["--preload-gb", str(preload_gb)]
+        self._start()
+
+    def _start(self):
+        self.p = subprocess.Popen(self._args, stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE, text=True, bufsize=1)
+        if self._line() != "READY":
+            raise EngineError("engine failed to start")
+        self.pending = []          # sampled but never forwarded (stop token)
+        self.n_ctx = 0             # tokens the engine has forwarded
+
+    def _line(self):
+        ln = self.p.stdout.readline()
+        if not ln:
+            raise EngineError("engine exited unexpectedly")
+        return ln.rstrip("\n")
+
+    def restart(self):
+        """Reset context by restarting the process (mmap makes this cheap)."""
+        self.close()
+        self._start()
+
+    def prefill(self, ids):
+        ids = self.pending + list(ids)
+        self.pending = []
+        if not ids:
+            return
+        self.p.stdin.write("ids: " + " ".join(map(str, ids)) + "\n")
+        self.p.stdin.flush()
+        ln = self._line()
+        if not ln.startswith("OK"):
+            raise EngineError(ln)
+        self.n_ctx += len(ids)
+
+    def generate(self, ngen: int, stop_ids, on_token, chunk: int = 0):
+        """Generate up to ngen tokens, calling on_token(t) for each.
+        Stops early on a stop token, or when on_token returns False
+        (checked between chunks of `chunk` tokens; 0 = single chunk).
+        Returns the last sampled token (or None)."""
+        stop_ids = set(stop_ids)
+        left, last, keep_going = ngen, None, True
+        step = chunk if chunk > 0 else ngen
+        while left > 0 and keep_going:
+            n = min(step, left)
+            self.p.stdin.write(f"gen: {n}\n")
+            self.p.stdin.flush()
+            produced = 0
+            while True:
+                ln = self._line()
+                if ln.startswith("T "):
+                    last = int(ln[2:])
+                    produced += 1
+                    if on_token(last) is False:
+                        keep_going = False
+                elif ln.startswith("DONE"):
+                    break
+            left -= produced
+            if last is not None and last in stop_ids:
+                self.pending = [last]           # engine never forwarded it
+                self.n_ctx += produced - 1
+                return last
+            self.n_ctx += produced
+            if produced < n:                    # engine hit ctx limit
+                break
+        return last
+
+    def close(self):
+        try:
+            self.p.stdin.write("quit\n")
+            self.p.stdin.flush()
+            self.p.wait(timeout=10)
+        except Exception:
+            self.p.kill()
+
+    def set_sampling(self, temp: float, topp: float, seed: int | None = None):
+        """Retune sampling parameters without losing the KV context."""
+        cmd = f"set: {temp} {topp}" + (f" {seed}" if seed is not None else "")
+        self.p.stdin.write(cmd + "\n")
+        self.p.stdin.flush()
+        if not self._line().startswith("OK"):
+            raise EngineError("set failed")

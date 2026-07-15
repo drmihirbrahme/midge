@@ -52,59 +52,24 @@ def load_spec(model_dir):
 
 
 # --------------------------------------------------------------- engine
-class Engine:
+from engine_client import EngineProc, EngineError  # noqa: E402
+
+
+class Engine(EngineProc):
+    """CLI-flavoured wrapper: die() on errors, ROOT-relative binary."""
+
     def __init__(self, model_dir, ctx, temp, topp, seed, stop_ids, preload_gb):
-        exe = os.path.join(ROOT, "midged")
-        if not os.path.exists(exe):
-            die("engine not built — run `make` first")
-        args = [exe, model_dir, "--ctx", str(ctx), "--temp", str(temp),
-                "--topp", str(topp), "--seed", str(seed)]
-        if stop_ids:
-            args += ["--stop", ",".join(map(str, stop_ids))]
-        if preload_gb:
-            args += ["--preload-gb", str(preload_gb)]
-        self.p = subprocess.Popen(args, stdin=subprocess.PIPE,
-                                  stdout=subprocess.PIPE, text=True, bufsize=1)
-        if self._line() != "READY":
-            die("engine failed to start")
-        self.pending = []          # sampled but never forwarded (stop token)
-
-    def _line(self):
-        ln = self.p.stdout.readline()
-        if not ln:
-            die("engine exited unexpectedly")
-        return ln.rstrip("\n")
-
-    def prefill(self, ids):
-        ids = self.pending + ids
-        self.pending = []
-        self.p.stdin.write("ids: " + " ".join(map(str, ids)) + "\n")
-        self.p.stdin.flush()
-        ln = self._line()
-        assert ln.startswith("OK"), ln
+        try:
+            super().__init__(os.path.join(ROOT, "midged"), model_dir, ctx,
+                             temp, topp, seed, stop_ids, preload_gb)
+        except EngineError as e:
+            die(str(e))
 
     def generate(self, ngen, stop_ids, on_token):
-        self.p.stdin.write(f"gen: {ngen}\n")
-        self.p.stdin.flush()
-        last = None
-        while True:
-            ln = self._line()
-            if ln.startswith("T "):
-                last = int(ln[2:])
-                on_token(last)
-            elif ln.startswith("DONE"):
-                break
-        if last is not None and last in stop_ids:
-            self.pending = [last]   # engine never forwarded it
-        return last
-
-    def close(self):
         try:
-            self.p.stdin.write("quit\n")
-            self.p.stdin.flush()
-            self.p.wait(timeout=10)
-        except Exception:
-            self.p.kill()
+            return super().generate(ngen, stop_ids, on_token)
+        except EngineError as e:
+            die(str(e))
 
 
 # ------------------------------------------------------------- commands
@@ -230,6 +195,9 @@ def main():
     v = sub.add_parser("convert", help="convert a HF checkpoint",
                        add_help=False)
 
+    sv = sub.add_parser("serve", help="OpenAI-compatible local API server",
+                        add_help=False)
+
     pl = sub.add_parser("plan", help="RAM/storage/IO math")
     pl.add_argument("model_dir", help="model dir or spec.json")
     pl.add_argument("--experts", default="mxfp4",
@@ -239,6 +207,9 @@ def main():
 
     if len(sys.argv) > 1 and sys.argv[1] == "convert":
         return cmd_convert(None, sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == "serve":
+        from serve import main as serve_main
+        return serve_main(sys.argv[2:])
     args = ap.parse_args()
     if args.cmd == "chat":
         cmd_chat(args)
