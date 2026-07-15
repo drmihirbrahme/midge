@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use midge in your work, please cite it as below."
+title: "midge: tiny engine, immense models"
+type: software
+authors:
+  - family-names: Brahme
+    given-names: Mihir
+    email: drmihir@duck.com
+repository-code: "https://github.com/drmihirbrahme/midge"
+license: Apache-2.0
+version: 0.1.0
+date-released: 2026-07-15
+abstract: >-
+  A spec-driven inference engine that runs 100B+ mixture-of-experts
+  language models on ordinary machines by keeping the dense trunk
+  resident and streaming routed experts from disk, with CPU (Linux)
+  and Apple Silicon (MLX) backends sharing one container format.

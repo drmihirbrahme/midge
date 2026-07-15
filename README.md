@@ -1,5 +1,8 @@
 # midge
 
+[![ci](https://github.com/drmihirbrahme/midge/actions/workflows/ci.yml/badge.svg)](https://github.com/drmihirbrahme/midge/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 **Tiny engine, immense models.** — by Dr Mihir Brahme <drmihir@duck.com> Run 100B+ mixture-of-experts LLMs on an
 ordinary CPU machine with a few GB of RAM, by keeping only the dense trunk
 resident and streaming the routed experts from disk.
@@ -63,7 +66,7 @@ Requirements: Linux (or macOS for the MLX engine), gcc with OpenMP,
 Python 3.9+.
 
 ```bash
-git clone https://github.com/mihirbrahme/midge && cd midge
+git clone https://github.com/drmihirbrahme/midge && cd midge
 make                                   # builds ./midged (the C engine)
 pip install numpy tokenizers huggingface_hub
 ```
