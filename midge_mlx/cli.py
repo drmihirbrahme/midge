@@ -32,7 +32,7 @@ def load(args):
     tok = Tokenizer.from_file(tokp)
     t0 = time.time()
     model = MidgeMLX(args.model_dir, ctx=args.ctx, dense_bits=args.dense_bits,
-                    cache_gb=args.cache_gb)
+                    cache_gb=args.cache_gb, device=args.device)
     print(f"# midge-mlx ready in {time.time()-t0:.1f}s · "
           f"{spec['n_layers']} layers · {spec['moe']['experts']} experts "
           f"(top-{spec['moe']['top_k']}) · cache {args.cache_gb} GiB · "
@@ -72,6 +72,8 @@ def main():
                        help="expert LRU budget in unified memory")
         c.add_argument("--dense-bits", type=int, default=8, choices=[4, 8, 16, 32],
                        help="requantize dense trunk to this many bits at load")
+        c.add_argument("--device", default="auto", choices=["auto", "cpu", "gpu"],
+                       help="gpu = Metal (macOS) or CUDA (Linux, mlx[cuda])")
         c.add_argument("--no-analysis", action="store_true")
         c.add_argument("--system", default="You are a helpful assistant.")
         c.add_argument("--reasoning", default="low",

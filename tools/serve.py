@@ -100,6 +100,54 @@ class ChannelParser:
 
 
 # --------------------------------------------------------------- backend
+class MlxAdapter:
+    """Adapts midge_mlx.MidgeMLX to the EngineProc interface the
+    Session expects (prefill/generate/set_sampling/restart/n_ctx)."""
+
+    def __init__(self, args):
+        sys.path.insert(0, ROOT)
+        from midge_mlx.model import MidgeMLX
+        self.m = MidgeMLX(args.model_dir, ctx=args.ctx,
+                          dense_bits=args.dense_bits,
+                          cache_gb=args.cache_gb, device=args.device)
+        print(f"[serve] mlx backend on {self.m.device}, kernels: "
+              f"{self.m.caps}", file=sys.stderr)
+        self.pending, self.n_ctx = [], 0
+        self.temp, self.topp, self.seed = 0.7, 0.9, args.seed
+
+    def set_sampling(self, temp, topp, seed=None):
+        self.temp, self.topp = temp, topp
+        if seed is not None:
+            self.seed = seed
+
+    def prefill(self, ids):
+        for t in self.pending + list(ids):
+            self.m.forward(t)
+            self.n_ctx += 1
+        self.pending = []
+
+    def generate(self, ngen, stop_ids, on_token, chunk=0):
+        stop_ids = set(stop_ids)
+        self.seed += 1
+        last = None
+        for t in self.m.generate([], ngen, temp=self.temp, topp=self.topp,
+                                 stop_ids=stop_ids, seed=self.seed):
+            last = t
+            cont = on_token(t)
+            if t in stop_ids or cont is False:
+                # model.generate yields before forwarding; on stop or
+                # early break the token was never forwarded
+                self.pending = [t]
+                return last
+            self.n_ctx += 1
+        return last
+
+    def restart(self):
+        self.m.reset()
+        self.pending, self.n_ctx = [], 0
+
+
+
 class Session:
     """One engine + the message list its KV context currently encodes."""
 
@@ -111,9 +159,12 @@ class Session:
         self.tok = Tokenizer.from_file(
             os.path.join(args.model_dir, "tokenizer.json"))
         self.h = Harmony(self.tok, self.spec)
-        self.eng = EngineProc(os.path.join(ROOT, "midged"), args.model_dir,
-                              args.ctx, 1.0, 1.0, args.seed, self.h.stop_ids,
-                              args.preload_gb)
+        if args.backend == "mlx":
+            self.eng = MlxAdapter(args)
+        else:
+            self.eng = EngineProc(os.path.join(ROOT, "midged"), args.model_dir,
+                                  args.ctx, 1.0, 1.0, args.seed,
+                                  self.h.stop_ids, args.preload_gb)
         self.msgs = []             # messages currently in the engine context
         self.lock = threading.Lock()
         self.model_name = os.path.basename(os.path.normpath(args.model_dir))
@@ -238,6 +289,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"object": "list", "data": [{
                 "id": self.S.model_name, "object": "model",
                 "created": now(), "owned_by": "midge"}]})
+        if self.path.startswith(("/v1/models/", "/models/")):
+            name = self.path.rsplit("/", 1)[1]
+            if name == self.S.model_name:
+                return self._json(200, {"id": name, "object": "model",
+                                        "created": now(), "owned_by": "midge"})
+            return self._err(404, f"model {name!r} not found")
         self._err(404, f"no route {self.path}")
 
     def do_POST(self):
@@ -269,7 +326,20 @@ class Handler(BaseHTTPRequestHandler):
         if isinstance(stop, str):
             stop = [stop]
         stream = bool(body.get("stream"))
+        # reasoning controls: the standard reasoning_effort field sets the
+        # harmony "Reasoning:" level; "none" hides the analysis channel.
+        # enable_thinking (extension) explicitly shows/hides it.
+        effort = body.get("reasoning_effort")
         include_reasoning = bool(body.get("include_reasoning", True))
+        if effort == "none":
+            include_reasoning = False
+            effort = "low"
+        if "enable_thinking" in body:
+            include_reasoning = bool(body["enable_thinking"])
+        if effort in ("low", "medium", "high"):
+            sysmsg = msgs[0]
+            if "Reasoning:" not in sysmsg["content"]:
+                sysmsg["content"] += f"\nReasoning: {effort}"
         rid = "chatcmpl-" + uuid.uuid4().hex[:24]
         base = {"id": rid, "object": "chat.completion.chunk",
                 "created": now(), "model": self.S.model_name}
@@ -370,6 +440,15 @@ def main(argv=None):
     ap.add_argument("--ctx", type=int, default=8192)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--preload-gb", type=float, default=0)
+    ap.add_argument("--backend", default="c", choices=["c", "mlx"],
+                    help="c = midged subprocess; mlx = in-process MLX "
+                         "(Apple Silicon Metal or CUDA via mlx[cuda])")
+    ap.add_argument("--device", default="auto", choices=["auto", "cpu", "gpu"],
+                    help="mlx backend only")
+    ap.add_argument("--cache-gb", type=float, default=2.0,
+                    help="mlx backend: expert LRU budget")
+    ap.add_argument("--dense-bits", type=int, default=8,
+                    choices=[4, 8, 16, 32], help="mlx backend")
     ap.add_argument("--chunk", type=int, default=8,
                     help="generation chunk size (stop strings are checked "
                          "between chunks)")

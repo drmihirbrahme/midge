@@ -44,6 +44,10 @@ def free_port():
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--backend", default="c", choices=["c", "mlx"])
+    opts = ap.parse_args()
     try:
         from openai import OpenAI
     except ImportError:
@@ -59,7 +63,9 @@ def main():
     port = free_port()
     srv = subprocess.Popen(
         [sys.executable, os.path.join(ROOT, "tools/serve.py"), model_dir,
-         "--port", str(port), "--ctx", "220"],
+         "--port", str(port), "--ctx", "220", "--backend", opts.backend]
+        + (["--device", "cpu", "--dense-bits", "32"]
+           if opts.backend == "mlx" else []),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     base = f"http://127.0.0.1:{port}"
     try:
@@ -75,6 +81,14 @@ def main():
         c = OpenAI(base_url=base + "/v1", api_key="midge")
         m = c.models.list().data[0].id
         assert m == "srv-model", m
+        one = c.models.retrieve(m)
+        assert one.id == m
+        try:
+            c.models.retrieve("nope")
+            raise SystemExit("retrieve of unknown model should 404")
+        except Exception:
+            pass
+        print("[validate_server] /v1/models + /v1/models/{model}       OK")
 
         sys_u = [{"role": "system", "content": "s"},
                  {"role": "user", "content": "hi"}]
@@ -132,6 +146,18 @@ def main():
                                        stop=["|"], messages=sys_u)
         assert "|" not in (r4.choices[0].message.content or "")
         print("[validate_server] stop strings                        OK")
+
+        # reasoning controls: effort accepted; enable_thinking=False must
+        # strip reasoning_content from the response
+        r5 = c.chat.completions.create(model=m, max_tokens=30, temperature=1.0,
+            extra_body={"reasoning_effort": "high"}, messages=sys_u)
+        r6 = c.chat.completions.create(model=m, max_tokens=30, temperature=1.0,
+            extra_body={"enable_thinking": False}, messages=sys_u)
+        assert getattr(r6.choices[0].message, "reasoning_content", None) is None
+        r7 = c.chat.completions.create(model=m, max_tokens=30, temperature=1.0,
+            extra_body={"reasoning_effort": "none"}, messages=sys_u)
+        assert getattr(r7.choices[0].message, "reasoning_content", None) is None
+        print("[validate_server] reasoning_effort / enable_thinking    OK")
 
         req = urllib.request.Request(base + "/v1/completions",
             data=json.dumps({"prompt": "hi", "max_tokens": 6}).encode(),

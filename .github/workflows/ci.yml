@@ -20,8 +20,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: deps
-        run: pip install numpy "mlx[cpu]"
+        run: pip install numpy "mlx[cpu]" tokenizers openai
       - name: build
         run: make
       - name: validate MLX engine (CPU backend, all dtypes)
         run: make test-mlx
+      - name: validate OpenAI server on the MLX backend
+        run: python3 tools/validate_server.py --backend mlx

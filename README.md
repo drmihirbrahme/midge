@@ -135,7 +135,26 @@ The MLX engine reads the same model directory — nothing to re-convert:
 Budget roughly: dense (~2 GiB at 8-bit for gpt-oss) + cache + a couple
 of GiB for the OS.
 
-### 5. Serve an OpenAI-compatible API (for agents and apps)
+### 5. NVIDIA GPUs (CUDA)
+
+The MLX engine is device-agnostic: MLX ships official CUDA wheels for
+Linux, and midge's MLX code runs unchanged on them.
+
+```bash
+pip install "mlx[cuda]"
+./midge-mlx chat models/gpt-oss-20b --device gpu --cache-gb 8
+./midge serve models/gpt-oss-20b --backend mlx --device gpu   # API on GPU
+```
+
+At startup the engine probes which quantized kernels the active backend
+supports and transparently falls back to exact dequantized weights for
+any it lacks, so partial backend coverage degrades performance, never
+correctness (the fallback path is part of the test suite). Honest
+status: developed and validated on MLX's CPU backend — the same code
+CUDA executes — but not yet run on physical NVIDIA hardware by the
+author. If you have a CUDA box, reports (good or bad) are very welcome.
+
+### 6. Serve an OpenAI-compatible API (for agents and apps)
 
 ```bash
 ./midge serve models/gpt-oss-20b --port 8420 --preload-gb 4

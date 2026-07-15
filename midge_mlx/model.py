@@ -24,6 +24,49 @@ from collections import OrderedDict
 import numpy as np
 import mlx.core as mx
 
+
+def select_device(device: str = "auto"):
+    """device: auto | cpu | gpu (gpu = Metal on macOS, CUDA on Linux
+    builds installed via `pip install "mlx[cuda]"`)."""
+    if device == "cpu":
+        mx.set_default_device(mx.cpu)
+    elif device == "gpu":
+        try:
+            mx.set_default_device(mx.gpu)
+        except Exception as e:
+            raise RuntimeError(
+                "no GPU device available in this MLX build "
+                "(install mlx[cuda] on Linux, plain mlx on Apple Silicon): "
+                f"{e}")
+    return mx.default_device()
+
+
+def probe_kernels() -> dict:
+    """Test which quantized kernels the active backend supports, so the
+    engine can fall back to dequantized weights per-op instead of
+    crashing on backends (e.g. new CUDA builds) that lack one."""
+    caps = {}
+    x = mx.ones((1, 64), dtype=mx.float32)
+    w = mx.zeros((8, 8), dtype=mx.uint32)   # 8 nibbles/u32 -> 64 cols
+    s16 = mx.ones((8, 2), dtype=mx.float16)
+    s8 = mx.full((8, 2), 127, dtype=mx.uint8)
+    for name, kw in [
+        ("affine4_g32", dict(scales=s16, biases=-8.0 * s16, group_size=32, bits=4)),
+        ("mxfp4", dict(scales=s8, group_size=32, bits=4, mode="mxfp4")),
+    ]:
+        try:
+            mx.eval(mx.quantized_matmul(x, w, transpose=True, **kw))
+            caps[name] = True
+        except Exception:
+            caps[name] = False
+    try:
+        q = mx.quantize(mx.ones((8, 64), dtype=mx.float32), group_size=64, bits=8)
+        mx.eval(mx.quantized_matmul(x, *q, transpose=True, group_size=64, bits=8))
+        caps["affine_g64"] = True
+    except Exception:
+        caps["affine_g64"] = False
+    return caps
+
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
 import midgepack as wp
@@ -44,7 +87,9 @@ def _f16_to_e8m0(scales_f16: np.ndarray) -> np.ndarray | None:
 class _DenseMat:
     """A dense matrix, either f16 or MLX affine-quantized."""
 
-    def __init__(self, w_f32: np.ndarray, bits: int):
+    def __init__(self, w_f32: np.ndarray, bits: int, caps=None):
+        if caps is not None and bits < 16 and not caps.get("affine_g64"):
+            bits = 32                      # backend lacks affine kernels; stay exact
         if bits >= 32:
             self.q = None
             self.w = mx.array(w_f32.astype(np.float32))
@@ -73,7 +118,8 @@ class _DenseMat:
 class _ExpertCache:
     """Byte-budgeted LRU of materialized expert weights (MLX arrays)."""
 
-    def __init__(self, path: str, spec: dict, budget_bytes: int):
+    def __init__(self, path: str, spec: dict, budget_bytes: int, caps=None):
+        self.caps = caps or {}
         with open(path, "rb") as f:
             import struct
             (hl,) = struct.unpack("<Q", f.read(8))
@@ -101,7 +147,9 @@ class _ExpertCache:
             bias = np.frombuffer(self._blob(layer, e, mat, "bias", rows * 4),
                                  np.float32).copy()
             entry = {"bias": mx.array(bias), "rows": rows, "cols": cols}
-            if self.dt in ("q4g32", "mxfp4"):
+            use_kernel = self.caps.get(
+                "affine4_g32" if self.dt == "q4g32" else "mxfp4", True)
+            if self.dt in ("q4g32", "mxfp4") and use_kernel:
                 data = self._blob(layer, e, mat, "data", db)
                 wq = mx.array(np.frombuffer(data, np.uint32)
                               .reshape(rows, cols // 8).copy())
@@ -113,11 +161,11 @@ class _ExpertCache:
                         entry.update(kind="mxfp4", wq=wq, sc=mx.array(e8))
                     else:   # non-power-of-two scales: dequantize once
                         w = wp.mxfp4_decode(data.tobytes(), s16.tobytes(), rows, cols)
-                        entry.update(kind="f16", w=mx.array(w.astype(np.float16)))
+                        entry.update(kind="f32", w=mx.array(w.astype(np.float32)))
                 else:
                     sc = mx.array(s16)
                     entry.update(kind="q4", wq=wq, sc=sc, bi=-8.0 * sc)
-            else:  # q8r / f32 -> dense f32 (exact)
+            else:  # q8r / f32 / kernel-less 4-bit -> dense f32 (exact)
                 data = self._blob(layer, e, mat, "data", db)
                 scales = self._blob(layer, e, mat, "scales", sb).tobytes() if sb else b""
                 w = wp.decode(self.dt, data.tobytes(), scales, rows, cols)
@@ -158,13 +206,15 @@ class _ExpertCache:
 
 class MidgeMLX:
     def __init__(self, model_dir: str, ctx: int = 8192, dense_bits: int = 8,
-                 cache_gb: float = 2.0):
+                 cache_gb: float = 2.0, device: str = "auto"):
+        self.device = select_device(device)
+        self.caps = probe_kernels()
         self.spec, dense = wp.read_dense(os.path.join(model_dir, "dense.midge"))
         s = self.spec
         self.ctx = min(ctx, s.get("max_ctx", ctx))
         self.hd, self.nh, self.nkv = s["head_dim"], s["n_heads"], s["n_kv_heads"]
         self.experts = _ExpertCache(os.path.join(model_dir, "experts.midge"),
-                                    s, int(cache_gb * (1 << 30)))
+                                    s, int(cache_gb * (1 << 30)), self.caps)
         self.d = {}
         for name, w in dense.items():
             if w.ndim == 1:
@@ -172,7 +222,7 @@ class MidgeMLX:
             elif name.startswith("L") and ".router." in name:
                 self.d[name] = _DenseMat(w, 32)     # routers stay full precision
             else:
-                self.d[name] = _DenseMat(w, dense_bits)
+                self.d[name] = _DenseMat(w, dense_bits, self.caps)
         self.cos, self.sin = self._rope_tables()
         self.reset()
 
