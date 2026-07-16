@@ -67,9 +67,9 @@ def probe_kernels() -> dict:
         caps["affine_g64"] = False
     return caps
 
-import sys
+import sys  # noqa: E402
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
-import midgepack as wp
+import midgepack as wp  # noqa: E402
 
 
 def _f16_to_e8m0(scales_f16: np.ndarray) -> np.ndarray | None:

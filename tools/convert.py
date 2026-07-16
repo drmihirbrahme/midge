@@ -167,7 +167,6 @@ class Converter:
 
     # -- per-tensor handling
     def handle(self, name: str, st: wp.SafeTensors):
-        s = self.spec
         # dense trunk -------------------------------------------------
         if name == "model.embed_tokens.weight":
             return self.dense.add("embed", st.get(name), self.dense_dt)

@@ -172,7 +172,10 @@ class Session:
     # -- context management ------------------------------------------
     def _sync(self, messages):
         """Bring the engine context to `messages` + generation prefix,
-        prefilling as little as possible. Returns prompt token count."""
+        prefilling as little as possible. Returns (full_prompt_tokens,
+        cached_tokens) — OpenAI usage semantics: prompt_tokens counts the
+        whole conversation; cached_tokens is the part the session cache
+        let us skip."""
         n = len(self.msgs)
         if n and len(messages) > n and messages[:n] == self.msgs:
             delta = messages[n:]
@@ -182,17 +185,20 @@ class Session:
             delta = messages
             self.msgs = []
         ids = self.h.render(delta, add_generation_prefix=True)
+        cached = self.eng.n_ctx if self.msgs else 0
         self.eng.prefill(ids)
         self.msgs = self.msgs + list(delta)
-        return len(ids)
+        return cached + len(ids), cached
 
-    def chat(self, messages, max_tokens, temp, topp, stop_strs, on_event):
+    def chat(self, messages, max_tokens, temp, topp, stop_strs, on_event,
+             seed=None):
         """Run one chat turn. on_event(channel, delta) streams text.
         Returns (final_text, reasoning_text, finish_reason, usage)."""
         with self.lock:
-            n_prompt = self._sync(messages)
+            n_prompt, n_cached = self._sync(messages)
             self.eng.set_sampling(0.7 if temp is None else float(temp),
-                                  0.9 if topp is None else float(topp))
+                                  0.9 if topp is None else float(topp),
+                                  seed=int(seed) if seed is not None else None)
             parser = ChannelParser(self.h)
             final, reasoning = [], []
             state = {"stopped": False, "n_gen": 0}
@@ -237,7 +243,8 @@ class Session:
                 self.eng.restart()
             usage = {"prompt_tokens": n_prompt,
                      "completion_tokens": state["n_gen"],
-                     "total_tokens": n_prompt + state["n_gen"]}
+                     "total_tokens": n_prompt + state["n_gen"],
+                     "prompt_tokens_details": {"cached_tokens": n_cached}}
             return final_text, reasoning_text, fin, usage
 
 
@@ -375,7 +382,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise
             try:
                 final, reasoning, fin, usage = self.S.chat(
-                    msgs, max_tokens, temp, topp, stop, on_event)
+                    msgs, max_tokens, temp, topp, stop, on_event,
+                    seed=body.get("seed"))
             except (BrokenPipeError, ConnectionResetError):
                 self.S.msgs = []
                 self.S.eng.restart()
@@ -394,7 +402,8 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             final, reasoning, fin, usage = self.S.chat(
-                msgs, max_tokens, temp, topp, stop, lambda ch, d: None)
+                msgs, max_tokens, temp, topp, stop, lambda ch, d: None,
+                seed=body.get("seed"))
         except EngineError as e:
             return self._err(500, str(e))
         usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]

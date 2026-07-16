@@ -8,8 +8,8 @@ authors:
     email: drmihir@duck.com
 repository-code: "https://github.com/drmihirbrahme/midge"
 license: Apache-2.0
-version: 0.1.0
-date-released: 2026-07-15
+version: 0.2.0
+date-released: 2026-07-16
 abstract: >-
   A spec-driven inference engine that runs 100B+ mixture-of-experts
   language models on ordinary machines by keeping the dense trunk

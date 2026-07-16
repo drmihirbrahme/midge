@@ -275,21 +275,24 @@ one-command spot check on your machine (`validate_hf.py`); if it or
 ## Repository layout
 
 ```
-midge                  Python CLI: chat / run / convert / plan
-midge-mlx              MLX CLI (Apple Silicon): chat / run
-midge_mlx/             MLX engine: unified-memory LRU over the same container
-midged                 (built) C engine — token ids in, token ids out
-engine/midge.c         the whole engine: spec-driven MoE transformer
+midge                 CLI: ui / check / convert / plan / chat / run / serve
+midge-mlx             MLX CLI (Apple Silicon & CUDA): chat / run
+midged                (built) C engine — token ids in, token ids out
+engine/midge.c        the whole engine: spec-driven MoE transformer (+ --bench)
 engine/mten.h         .midge container reader (mmap, dtypes, expert layout)
 engine/mkern.h        matvec kernels: f32, q8 rows, 4-bit groups (int4/FP4)
 engine/mjson.h        small JSON parser
+midge_mlx/            MLX engine: unified-memory LRU over the same container
+webui/index.html      the onboarding interface (offline, no dependencies)
 tools/convert.py      HF checkpoint -> container (streaming, resumable)
-tools/midgepack.py     codecs + container writers/readers (shared source of truth)
+tools/doctor.py       `midge check`: compatibility + device-fit verdicts
+tools/serve.py        OpenAI-compatible API server (C or MLX backend)
+tools/ui.py           interface backend: setup jobs, progress, serve handoff
+tools/midgepack.py    codecs + container writers/readers (source of truth)
 tools/reference.py    NumPy forward pass (ground truth for tests)
-tools/validate.py     make test
-specs/                model descriptors (gpt-oss-120b, gpt-oss-20b, TEMPLATE)
-docs/DESIGN.md        why it is built this way
-docs/ADDING_MODELS.md how to run another MoE model on midge
+tools/validate*.py    the five test suites (make test / test-mlx / test-server / test-ui)
+specs/                model descriptors + catalog.json (the model registry)
+docs/                 DESIGN.md · ADDING_MODELS.md
 ```
 
 ## Adding a model

@@ -131,10 +131,13 @@ def main():
                         {"role": "user", "content": "b"}]
         r2 = c.chat.completions.create(model=m, max_tokens=8, temperature=0,
                                        messages=msgs2)
-        assert r2.usage.prompt_tokens < p1, \
-            f"cache miss: {r2.usage.prompt_tokens} vs first turn {p1}"
-        print(f"[validate_server] prefix cache (prefilled "
-              f"{r2.usage.prompt_tokens} vs {p1} first turn)  OK")
+        det = r2.usage.prompt_tokens_details
+        cached = det.cached_tokens if det else 0
+        assert cached > 0, "expected cached_tokens > 0 on the append turn"
+        assert r2.usage.prompt_tokens > p1, \
+            "prompt_tokens must count the whole conversation"
+        print(f"[validate_server] prefix cache ({cached} cached of "
+              f"{r2.usage.prompt_tokens} prompt tokens)  OK")
 
         r3 = c.chat.completions.create(model=m, max_tokens=8, temperature=0,
             messages=[{"role": "system", "content": "s"},
@@ -151,6 +154,7 @@ def main():
         # strip reasoning_content from the response
         r5 = c.chat.completions.create(model=m, max_tokens=30, temperature=1.0,
             extra_body={"reasoning_effort": "high"}, messages=sys_u)
+        assert r5.choices[0].finish_reason in ("stop", "length")
         r6 = c.chat.completions.create(model=m, max_tokens=30, temperature=1.0,
             extra_body={"enable_thinking": False}, messages=sys_u)
         assert getattr(r6.choices[0].message, "reasoning_content", None) is None

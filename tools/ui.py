@@ -32,6 +32,7 @@ import subprocess
 import sys
 import threading
 import time
+import re
 import webbrowser
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -183,6 +184,14 @@ class State:
                        if self.server and self.server.poll() is None else None),
         }
 
+    @staticmethod
+    def _safe_name(name):
+        if not name or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name) \
+                or name.startswith("."):
+            raise ValueError("model name must be 1-64 chars of "
+                             "letters/digits/._- (got %r)" % name)
+        return name
+
     def start_setup(self, body):
         with self.lock:
             if self.job and not self.job.done:
@@ -196,14 +205,13 @@ class State:
                 source = cat[name]["hf_repo"]
             if not name:
                 name = source.rstrip("/").split("/")[-1].lower()
-            if not name:
-                raise ValueError("model name required")
+            name = self._safe_name(name)
             self.job = Job(name, source)
 
     def start_server(self, body):
         with self.lock:
             self.stop_server()
-            name = body.get("model")
+            name = self._safe_name(body.get("model"))
             d = os.path.join(MODELS_DIR, name)
             if not os.path.exists(os.path.join(d, "dense.midge")):
                 raise ValueError(f"model {name!r} is not converted yet")

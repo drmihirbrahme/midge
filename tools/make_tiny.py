@@ -166,7 +166,6 @@ def write_tiny_tokenizer(path: str, vocab_size: int):
 def make_other(args, rng):
     """Tiny mixtral-style or qwen3-moe-style checkpoints with the real
     HF tensor names (per-expert nn.Linear submodules)."""
-    import numpy as np
     hid, ffn, E, L, V = 64, 64, 4, 2, 128
     nh, nkv, hd = 4, 2, 16
     qwen = args.arch == "qwen3-moe"

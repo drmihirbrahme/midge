@@ -16,8 +16,6 @@ import argparse
 import signal
 import json
 import os
-import shutil
-import subprocess
 import sys
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)   # clean exit when piped to head/less
@@ -192,16 +190,16 @@ def main():
     r.add_argument("-p", "--prompt", required=True)
     add_engine_args(r)
 
-    v = sub.add_parser("convert", help="convert a HF checkpoint",
+    sub.add_parser("convert", help="convert a HF checkpoint",
                        add_help=False)
 
-    sv = sub.add_parser("serve", help="OpenAI-compatible local API server",
+    sub.add_parser("serve", help="OpenAI-compatible local API server",
                         add_help=False)
 
-    u = sub.add_parser("ui", help="web interface: download, convert, chat",
+    sub.add_parser("ui", help="web interface: download, convert, chat",
                        add_help=False)
 
-    ck = sub.add_parser("check", help="can this model run on this device?",
+    sub.add_parser("check", help="can this model run on this device?",
                         add_help=False)
 
     pl = sub.add_parser("plan", help="RAM/storage/IO math")

@@ -23,6 +23,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -99,6 +100,15 @@ def main():
         assert not r["report"]["compatible"] and r["report"]["verdict"] == "no"
         assert any("MLA" in x for x in r["report"]["reasons"])
         print("[validate_ui] /api/check: verdicts + reasons               OK")
+
+        # hardening: path-ish names must be rejected cleanly
+        for evil in ("../evil", "a/b", ".hidden"):
+            try:
+                req(base, "/api/setup", {"model": evil, "source": hf})
+                raise SystemExit(f"name {evil!r} should have been rejected")
+            except urllib.error.HTTPError as e:
+                assert e.code == 400
+        print("[validate_ui] unsafe model names rejected                OK")
 
         req(base, "/api/setup", {"model": "ui-test", "source": hf})
         saw_log = False
