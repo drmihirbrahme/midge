@@ -1,0 +1,64 @@
+{
+  "arch": "mixtral",
+  "hidden": 4096,
+  "n_layers": 32,
+  "n_heads": 32,
+  "n_kv_heads": 8,
+  "head_dim": 128,
+  "vocab": 32000,
+  "norm_eps": 1e-05,
+  "attn": {
+    "layer_types": [
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention",
+      "full_attention"
+    ],
+    "sliding_window": 0,
+    "sinks": false,
+    "scale": 0.08838834764831843
+  },
+  "rope": {
+    "theta": 1000000.0
+  },
+  "max_ctx": 32768,
+  "tokenizer": {
+    "template": "plain",
+    "eos_token_id": 2
+  },
+  "moe": {
+    "experts": 8,
+    "top_k": 2,
+    "ffn": 14336,
+    "act": "swiglu",
+    "router_norm": 1
+  }
+}

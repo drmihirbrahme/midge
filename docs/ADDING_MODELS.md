@@ -25,7 +25,9 @@ Copy `specs/TEMPLATE.json`. Field notes:
 | `n_heads`, `n_kv_heads`, `head_dim` | GQA shape (`n_heads % n_kv_heads == 0`) |
 | `norm_eps` | RMSNorm epsilon |
 | `moe.experts`, `moe.top_k`, `moe.ffn` | routing + expert FFN width |
-| `moe.act` | `swiglu_clamp` (α, limit) — plain SwiGLU is `limit: 1e30, alpha: 1.702→` use your model's gating |
+| `moe.act` | `swiglu_clamp` (α, limit; gpt-oss) or `swiglu` (plain silu(g)·u) |
+| `moe.router_norm` | 1 = softmax over selected logits (gpt-oss, Mixtral); 0 = weights from the full softmax (`norm_topk_prob: false`) |
+| `attn.qk_norm` | per-head RMSNorm on q,k before RoPE (Qwen3) — needs `L{i}.attn.{q,k}_norm` tensors |
 | `attn.layer_types` | list, one per layer; any string containing `sliding` uses the ring KV |
 | `attn.sliding_window` | window size in tokens (0 disables) |
 | `attn.sinks` | learned per-head sink logits (gpt-oss: true) |

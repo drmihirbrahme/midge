@@ -109,6 +109,12 @@ class Reference:
         q = d[f"L{L}.attn.q"] @ xb + d[f"L{L}.attn.q_b"]
         k = d[f"L{L}.attn.k"] @ xb + d[f"L{L}.attn.k_b"]
         v = d[f"L{L}.attn.v"] @ xb + d[f"L{L}.attn.v_b"]
+        if s["attn"].get("qk_norm"):
+            qn, kn = d[f"L{L}.attn.q_norm"], d[f"L{L}.attn.k_norm"]
+            q = np.concatenate([self.rmsnorm(h, qn, s["norm_eps"])
+                                for h in q.reshape(-1, hd)])
+            k = np.concatenate([self.rmsnorm(h, kn, s["norm_eps"])
+                                for h in k.reshape(-1, hd)])
         q = self._rope(q, pos)
         k = self._rope(k, pos)
 
@@ -141,18 +147,25 @@ class Reference:
         rl = d[f"L{L}.router.w"] @ xb + d[f"L{L}.router.b"]
         k = m["top_k"]
         sel = np.argsort(-rl, kind="stable")[:k]
-        w = np.exp(rl[sel] - rl[sel].max())
-        w = w / w.sum()
+        if m.get("router_norm", 1):
+            w = np.exp(rl[sel] - rl[sel].max())
+            w = w / w.sum()
+        else:                       # weights from full softmax, unnormalized
+            full = np.exp(rl - rl.max())
+            w = full[sel] / full.sum()
 
-        alpha, limit = m["alpha"], m["limit"]
+        alpha, limit = m.get("alpha", 1.702), m.get("limit", 7.0)
         acc = np.zeros(s["hidden"], np.float32)
         for wi, e in zip(w, sel):
             ex = self.expert(L, int(e))
             g = ex["gate"] @ xb + ex["gate_b"]
             u = ex["up"] @ xb + ex["up_b"]
-            g = np.minimum(g, limit)
-            u = np.clip(u, -limit, limit)
-            act = g / (1.0 + np.exp(-alpha * g)) * (u + 1.0)
+            if m.get("act") == "swiglu":
+                act = g / (1.0 + np.exp(-g)) * u
+            else:
+                g = np.minimum(g, limit)
+                u = np.clip(u, -limit, limit)
+                act = g / (1.0 + np.exp(-alpha * g)) * (u + 1.0)
             acc += wi * (ex["down"] @ act.astype(np.float32) + ex["down_b"])
         return acc.astype(np.float32)
 

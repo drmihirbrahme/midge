@@ -195,6 +195,8 @@ class State:
                     raise ValueError(f"unknown model {name!r}")
                 source = cat[name]["hf_repo"]
             if not name:
+                name = source.rstrip("/").split("/")[-1].lower()
+            if not name:
                 raise ValueError("model name required")
             self.job = Job(name, source)
 
@@ -275,6 +277,12 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return self._json(400, {"error": "bad JSON"})
         try:
+            if self.path == "/api/check":
+                import doctor
+                rep = doctor.analyze(body.get("source", ""),
+                                     ctx=int(body.get("ctx") or 8192))
+                return self._json(200, {"report": rep,
+                                        "pretty": doctor.pretty(rep)})
             if self.path == "/api/setup":
                 self.S.start_setup(body)
                 return self._json(200, {"ok": True})

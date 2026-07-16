@@ -110,8 +110,10 @@ class ResumableDense:
 
 # ------------------------------------------------- tensor dispatching
 class Converter:
-    def __init__(self, spec, outdir, expert_dt, dense_dt, transpose_experts):
+    def __init__(self, spec, outdir, expert_dt, dense_dt, transpose_experts,
+                 tie_embeddings=False):
         self.spec = spec
+        self.tie = tie_embeddings
         self.expert_dt = expert_dt
         self.dense_dt = dense_dt
         self.transpose = transpose_experts
@@ -139,6 +141,29 @@ class Converter:
         with open(tmp, "w") as f:
             json.dump(self.state, f)
         os.replace(tmp, self.state_path)
+
+    def finalize(self):
+        """Backfill tensors the engine requires but this architecture
+        doesn't ship: zero biases, tied lm_head, zero sinks."""
+        s = self.spec
+        idx = self.dense.index
+        if self.tie and "lm_head" not in idx and "embed" in idx:
+            e = dict(idx["embed"])
+            idx["lm_head"] = e                    # same offsets: true tying
+        hid, nh, nkv, hd = s["hidden"], s["n_heads"], s["n_kv_heads"], s["head_dim"]
+        E = s["moe"]["experts"]
+        need = {"final_norm": hid}
+        for i in range(s["n_layers"]):
+            need.update({f"L{i}.attn.q_b": nh * hd, f"L{i}.attn.k_b": nkv * hd,
+                         f"L{i}.attn.v_b": nkv * hd, f"L{i}.attn.o_b": hid,
+                         f"L{i}.router.b": E})
+        z = {}
+        for name, n in need.items():
+            if name not in idx:
+                blob = z.get(n)
+                if blob is None:
+                    z[n] = blob = np.zeros(n, np.float32)
+                self.dense.add(name, blob)
 
     # -- per-tensor handling
     def handle(self, name: str, st: wp.SafeTensors):
@@ -169,6 +194,12 @@ class Converter:
             "self_attn.sinks": (f"L{i}.attn.sinks", "f32"),
             "mlp.router.weight": (f"L{i}.router.w", "f32"),
             "mlp.router.bias": (f"L{i}.router.b", "f32"),
+            # mixtral-style
+            "block_sparse_moe.gate.weight": (f"L{i}.router.w", "f32"),
+            # qwen3-moe style
+            "mlp.gate.weight": (f"L{i}.router.w", "f32"),
+            "self_attn.q_norm.weight": (f"L{i}.attn.q_norm", "f32"),
+            "self_attn.k_norm.weight": (f"L{i}.attn.k_norm", "f32"),
         }
         if rest in M:
             nm, dt = M[rest]
@@ -176,8 +207,30 @@ class Converter:
             return self.dense.add(nm, w, dt if w.ndim == 2 else "f32")
         # experts -----------------------------------------------------
         if rest.startswith("mlp.experts."):
-            return self.handle_expert(i, rest[len("mlp.experts."):], st, name)
+            key = rest[len("mlp.experts."):]
+            if key[:1].isdigit():        # qwen3-moe: experts.<E>.<mat>.weight
+                return self.handle_expert_indexed(i, key, st, name)
+            return self.handle_expert(i, key, st, name)
+        if rest.startswith("block_sparse_moe.experts."):
+            return self.handle_expert_indexed(
+                i, rest[len("block_sparse_moe.experts."):], st, name,
+                names={"w1": "gate", "w3": "up", "w2": "down"})
         log(f"  (skipping unknown tensor {name})")
+
+    def handle_expert_indexed(self, layer, key, st, full, names=None):
+        """Per-expert submodule tensors: '<E>.<mat>.weight', already
+        [out, in] row-major (standard nn.Linear)."""
+        names = names or {"gate_proj": "gate", "up_proj": "up",
+                          "down_proj": "down"}
+        parts = key.split(".")
+        e, mat = int(parts[0]), names.get(parts[1])
+        if mat is None or parts[-1] != "weight":
+            return log(f"  (skipping unknown expert tensor {full})")
+        w = st.get(full)
+        self.experts_put_quant(layer, e, mat, np.ascontiguousarray(w))
+        L = self.experts.layout
+        self.experts_put_bias(layer, e, mat,
+                              np.zeros(L.rows[mat], np.float32))
 
     def handle_expert(self, layer: int, key: str, st: wp.SafeTensors, full: str):
         E = self.spec["moe"]["experts"]
@@ -353,7 +406,8 @@ def main():
         log("warning: no tokenizer.json found; copy one into the model dir")
 
     conv = Converter(spec, args.outdir, args.experts, args.dense,
-                     transpose_experts=not args.no_transpose_experts)
+                     transpose_experts=not args.no_transpose_experts,
+                     tie_embeddings=bool(cfg.get("tie_word_embeddings")))
 
     shards = src.shards()
     log(f"{len(shards)} shard(s); experts={args.experts} dense={args.dense}")
@@ -370,6 +424,7 @@ def main():
         conv.mark(shard)
         src.release(path)
 
+    conv.finalize()
     conv.dense.finish()
     conv.experts.close()
     os.remove(conv.state_path)

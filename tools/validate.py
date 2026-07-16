@@ -36,7 +36,12 @@ CASES = [
     ("mxfp4-blocks", "mxfp4", ["--experts", "mxfp4", "--dense", "q8r"]),
 ]
 
-IDS = [1, 17, 42, 5, 99, 3, 77, 12, 63, 8, 120, 31]  # crosses sliding window=8
+IDS = [1, 17, 42, 5, 99, 3, 77, 12, 63, 8, 120, 31]
+ARCH_CASES = [
+    # (name, arch, convert flags)
+    ("mixtral-q4g32", "mixtral", ["--experts", "q4g32", "--dense", "q8r"]),
+    ("qwen3moe-q4g32", "qwen3-moe", ["--experts", "q4g32", "--dense", "q8r"]),
+]  # crosses sliding window=8
 NGEN = 24
 CTX = 64
 
@@ -94,12 +99,12 @@ class Engine:
         self.p.wait(timeout=10)
 
 
-def run_case(name, fmt, flags):
-    hf = os.path.join(TMP, f"hf-{fmt}")
+def run_case(name, fmt, flags, arch="gpt-oss"):
+    hf = os.path.join(TMP, f"hf-{arch}-{fmt}" if arch != "gpt-oss" else f"hf-{fmt}")
     model = os.path.join(TMP, f"model-{name.replace('>', '').replace('-', '_')}")
     if not os.path.exists(os.path.join(hf, "model.safetensors")):
         sh([sys.executable, os.path.join(ROOT, "tools/make_tiny.py"), hf,
-            "--format", fmt])
+            "--format", fmt, "--arch", arch])
     shutil.rmtree(model, ignore_errors=True)
     sh([sys.executable, os.path.join(ROOT, "tools/convert.py"), hf, model] + flags)
 
@@ -141,6 +146,8 @@ def main():
     os.makedirs(TMP, exist_ok=True)
     for name, fmt, flags in CASES:
         run_case(name, fmt, flags)
+    for name, arch, flags in ARCH_CASES:
+        run_case(name, "bf16", flags, arch=arch)
     print("[validate] all cases passed")
 
 

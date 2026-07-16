@@ -96,6 +96,36 @@ model choices.
 
 Everything below is the same pipeline as individual commands.
 
+### 0. Will it run? (any Hugging Face model)
+
+```bash
+./midge check mistralai/Mixtral-8x7B-Instruct-v0.1
+./midge check Qwen/Qwen3-30B-A3B      # any repo id or local path
+```
+
+fetches only the model's `config.json`, decides whether the
+architecture is inside the engine's family (with specific reasons when
+it isn't — "MLA is not implemented", not a shrug), then measures *this
+device* — the real engine kernel's throughput, disk read speed, free
+disk, available RAM — and prints a verdict with honest tok/s estimates:
+
+```
+model    openai/gpt-oss-120b  ·  arch: gpt-oss
+needs    62.3 GB disk (peaks 68.3 GB converting) · 3.0 GB resident RAM at ctx 8192
+device   210 GB disk free · 24.1/32.0 GB RAM available · 8 cores
+measured kernel 3.1 GB/s · disk 2350 MB/s
+estimate ~1.2 tok/s warm · ~1.1 tok/s cold (1.88 GB read/token cold)
+verdict  ✓ can run
+```
+
+Exit code 0 = can run, 1 = can't — usable in scripts. The same check
+lives in the web UI's "any Hugging Face model" box, and as a library
+(`from doctor import analyze`). Supported families today: **gpt-oss**,
+**Mixtral-style**, and **Qwen3-MoE-style** (plain SwiGLU, QK-norm,
+`norm_topk_prob` routers) — all three validated against the NumPy
+reference in CI. Architectures with MLA, shared experts, or sigmoid
+routers are refused with the reason named.
+
 ### 1. Convert a checkpoint
 
 ```bash

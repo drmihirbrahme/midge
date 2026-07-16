@@ -58,11 +58,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("outdir")
     ap.add_argument("--format", default="bf16", choices=["bf16", "mxfp4"])
+    ap.add_argument("--arch", default="gpt-oss",
+                    choices=["gpt-oss", "mixtral", "qwen3-moe"])
     ap.add_argument("--seed", type=int, default=7)
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
     rng = np.random.default_rng(args.seed)
+    if args.arch != "gpt-oss":
+        return make_other(args, rng)
     c = CFG
     hid, ffn = c["hidden_size"], c["intermediate_size"]
     E, L = c["num_local_experts"], c["num_hidden_layers"]
@@ -155,6 +159,61 @@ def write_tiny_tokenizer(path: str, vocab_size: int):
     }
     with open(path, "w") as f:
         json.dump(tok, f)
+
+
+
+
+def make_other(args, rng):
+    """Tiny mixtral-style or qwen3-moe-style checkpoints with the real
+    HF tensor names (per-expert nn.Linear submodules)."""
+    import numpy as np
+    hid, ffn, E, L, V = 64, 64, 4, 2, 128
+    nh, nkv, hd = 4, 2, 16
+    qwen = args.arch == "qwen3-moe"
+    c = {
+        "architectures": ["Qwen3MoeForCausalLM" if qwen else "MixtralForCausalLM"],
+        "model_type": "qwen3_moe" if qwen else "mixtral",
+        "hidden_size": hid, "num_hidden_layers": L,
+        "num_attention_heads": nh, "num_key_value_heads": nkv, "head_dim": hd,
+        "vocab_size": V, "num_experts_per_tok": 2,
+        "rms_norm_eps": 1e-5, "rope_theta": 10000.0,
+        "max_position_embeddings": 256, "eos_token_id": 127,
+        "tie_word_embeddings": qwen,
+    }
+    if qwen:
+        c.update(num_experts=E, moe_intermediate_size=ffn,
+                 norm_topk_prob=False)         # exercises router_norm=0
+    else:
+        c.update(num_local_experts=E, intermediate_size=ffn, sliding_window=8)
+
+    T = {}
+    def add(name, arr): T[name] = (arr, "BF16")
+    add("model.embed_tokens.weight", rnd(rng, V, hid))
+    if not qwen:
+        add("lm_head.weight", rnd(rng, V, hid))
+    add("model.norm.weight", 1.0 + rnd(rng, hid, scale=0.1))
+    moe_p = "mlp" if qwen else "block_sparse_moe"
+    mats = ({"gate_proj": (ffn, hid), "up_proj": (ffn, hid), "down_proj": (hid, ffn)}
+            if qwen else {"w1": (ffn, hid), "w3": (ffn, hid), "w2": (hid, ffn)})
+    for i in range(L):
+        p = f"model.layers.{i}."
+        add(p + "input_layernorm.weight", 1.0 + rnd(rng, hid, scale=0.1))
+        add(p + "post_attention_layernorm.weight", 1.0 + rnd(rng, hid, scale=0.1))
+        for nm, (o, inn) in {"q_proj": (nh*hd, hid), "k_proj": (nkv*hd, hid),
+                             "v_proj": (nkv*hd, hid), "o_proj": (hid, nh*hd)}.items():
+            add(p + f"self_attn.{nm}.weight", rnd(rng, o, inn))
+        if qwen:
+            add(p + "self_attn.q_norm.weight", 1.0 + rnd(rng, hd, scale=0.1))
+            add(p + "self_attn.k_norm.weight", 1.0 + rnd(rng, hd, scale=0.1))
+        add(p + f"{moe_p}.gate.weight", rnd(rng, E, hid, scale=0.6))
+        for e in range(E):
+            for nm, (o, inn) in mats.items():
+                add(p + f"{moe_p}.experts.{e}.{nm}.weight", rnd(rng, o, inn))
+    wp.write_safetensors(os.path.join(args.outdir, "model.safetensors"), T)
+    with open(os.path.join(args.outdir, "config.json"), "w") as f:
+        json.dump(c, f, indent=2)
+    write_tiny_tokenizer(os.path.join(args.outdir, "tokenizer.json"), V)
+    print(f"[make_tiny] wrote {args.outdir} ({args.arch}, {len(T)} tensors)")
 
 
 if __name__ == "__main__":

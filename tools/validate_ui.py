@@ -87,6 +87,19 @@ def main():
         print(f"[validate_ui] interface up in {time.time()-t0:.1f}s, "
               f"catalog + disk estimates                OK")
 
+        # the can-it-run check: compatible tiny model -> yes; MLA -> no
+        r = req(base, "/api/check", {"source": hf, "ctx": 128})
+        assert r["report"]["compatible"] and r["report"]["verdict"] in ("yes", "tight")
+        assert r["report"]["speed"]["cpu_measured_real_kernel"] in (True, False)
+        bad = os.path.join(TMP, "ui-mla")
+        os.makedirs(bad, exist_ok=True)
+        json.dump({"model_type": "deepseek_v3", "architectures": ["DeepseekV3ForCausalLM"]},
+                  open(os.path.join(bad, "config.json"), "w"))
+        r = req(base, "/api/check", {"source": bad})
+        assert not r["report"]["compatible"] and r["report"]["verdict"] == "no"
+        assert any("MLA" in x for x in r["report"]["reasons"])
+        print("[validate_ui] /api/check: verdicts + reasons               OK")
+
         req(base, "/api/setup", {"model": "ui-test", "source": hf})
         saw_log = False
         for _ in range(300):

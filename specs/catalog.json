@@ -4,7 +4,7 @@
       "name": "gpt-oss-20b",
       "hf_repo": "openai/gpt-oss-20b",
       "spec": "specs/gpt-oss-20b.json",
-      "params": "21B total · 3.6B active",
+      "params": "21B total \u00b7 3.6B active",
       "recommended": true,
       "notes": "Best first model: ~12 GB on disk, comfortable on 8 GB RAM."
     },
@@ -12,9 +12,17 @@
       "name": "gpt-oss-120b",
       "hf_repo": "openai/gpt-oss-120b",
       "spec": "specs/gpt-oss-120b.json",
-      "params": "117B total · 5.1B active",
+      "params": "117B total \u00b7 5.1B active",
       "recommended": false,
       "notes": "~62 GB on disk; needs ~75 GB free during conversion. Slow but mighty."
+    },
+    {
+      "name": "mixtral-8x7b-instruct",
+      "hf_repo": "mistralai/Mixtral-8x7B-Instruct-v0.1",
+      "spec": "specs/mixtral-8x7b.json",
+      "params": "46.7B total \u00b7 12.9B active",
+      "recommended": false,
+      "notes": "Mixtral family (requantized to int4). Architecture is CI-validated on synthetic weights; real-weights reports welcome."
     }
   ]
 }

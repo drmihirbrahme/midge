@@ -31,6 +31,11 @@ except ImportError as e:
 
 TMP = os.path.join(ROOT, ".test-tmp")
 IDS = [1, 17, 42, 5, 99, 3, 77, 12, 63, 8, 120, 31]
+ARCH_CASES = [
+    # (name, arch, convert flags)
+    ("mixtral-q4g32", "mixtral", ["--experts", "q4g32", "--dense", "q8r"]),
+    ("qwen3moe-q4g32", "qwen3-moe", ["--experts", "q4g32", "--dense", "q8r"]),
+]
 NGEN = 24
 CTX = 64
 
@@ -51,12 +56,12 @@ def sh(args):
         raise SystemExit("command failed: " + " ".join(map(str, args)))
 
 
-def run_case(name, fmt, flags, dense_bits, rtol):
-    hf = os.path.join(TMP, f"hf-{fmt}")
+def run_case(name, fmt, flags, dense_bits, rtol, arch="gpt-oss"):
+    hf = os.path.join(TMP, f"hf-{arch}-{fmt}" if arch != "gpt-oss" else f"hf-{fmt}")
     model_dir = os.path.join(TMP, "mlxmodel")
     if not os.path.exists(os.path.join(hf, "model.safetensors")):
         sh([sys.executable, os.path.join(ROOT, "tools/make_tiny.py"), hf,
-            "--format", fmt])
+            "--format", fmt, "--arch", arch])
     shutil.rmtree(model_dir, ignore_errors=True)
     sh([sys.executable, os.path.join(ROOT, "tools/convert.py"), hf, model_dir]
        + flags)
@@ -106,6 +111,8 @@ def main():
     os.makedirs(TMP, exist_ok=True)
     for case in CASES:
         run_case(*case)
+    for name, arch, flags in ARCH_CASES:
+        run_case(name, "bf16", flags, 32, 2e-3, arch=arch)
     print("[validate_mlx] all cases passed")
 
 

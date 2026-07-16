@@ -302,8 +302,19 @@ class MidgeMLX:
         q = self.d[f"L{L}.attn.q"].matvec(xb) + self.d[f"L{L}.attn.q_b"]
         k = self.d[f"L{L}.attn.k"].matvec(xb) + self.d[f"L{L}.attn.k_b"]
         v = self.d[f"L{L}.attn.v"].matvec(xb) + self.d[f"L{L}.attn.v_b"]
-        qn = self._rope(np.array(q, dtype=np.float32), pos)      # [nh, hd]
-        kn = self._rope(np.array(k, dtype=np.float32), pos)      # [nkv, hd]
+        qv = np.array(q, dtype=np.float32)
+        kv2 = np.array(k, dtype=np.float32)
+        if s["attn"].get("qk_norm"):
+            qw = np.array(self.d[f"L{L}.attn.q_norm"], dtype=np.float32)
+            kw = np.array(self.d[f"L{L}.attn.k_norm"], dtype=np.float32)
+            def _hn(v, w):
+                v = v.reshape(-1, hd)
+                ms = np.mean(v.astype(np.float64) ** 2, axis=1, keepdims=True)
+                return (v / np.sqrt(ms + s["norm_eps"]) * w).astype(np.float32).reshape(-1)
+            qv = _hn(qv, qw)
+            kv2 = _hn(kv2, kw)
+        qn = self._rope(qv, pos)                                  # [nh, hd]
+        kn = self._rope(kv2, pos)                                 # [nkv, hd]
 
         slot = pos % cap
         self.kc[L][slot] = kn.astype(np.float16)
@@ -332,18 +343,25 @@ class MidgeMLX:
                       + self.d[f"L{L}.router.b"], dtype=np.float32)
         k = m["top_k"]
         sel = np.argsort(-rl, kind="stable")[:k]
-        w = np.exp(rl[sel] - rl[sel].max())
-        w = w / w.sum()
+        if m.get("router_norm", 1):
+            w = np.exp(rl[sel] - rl[sel].max())
+            w = w / w.sum()
+        else:
+            full = np.exp(rl - rl.max())
+            w = full[sel] / full.sum()
 
-        alpha, limit = m["alpha"], m["limit"]
+        alpha, limit = m.get("alpha", 1.702), m.get("limit", 7.0)
         acc = mx.zeros(s["hidden"], dtype=mx.float32)
         for wi, e in zip(w, sel):
             ex = self.experts.get(L, int(e))
             g = self.experts.matvec(ex["gate"], xb)
             u = self.experts.matvec(ex["up"], xb)
-            g = mx.minimum(g, limit)
-            u = mx.clip(u, -limit, limit)
-            act = g * mx.sigmoid(alpha * g) * (u + 1.0)
+            if m.get("act") == "swiglu":
+                act = g * mx.sigmoid(g) * u
+            else:
+                g = mx.minimum(g, limit)
+                u = mx.clip(u, -limit, limit)
+                act = g * mx.sigmoid(alpha * g) * (u + 1.0)
             acc = acc + float(wi) * self.experts.matvec(ex["down"], act)
         return acc
 

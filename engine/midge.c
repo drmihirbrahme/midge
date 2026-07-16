@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <math.h>
 #include <time.h>
+#include <omp.h>
 #include <errno.h>
 #include "mjson.h"
 #include "mten.h"
@@ -42,6 +43,9 @@ typedef struct {
     int n_layers, n_heads, n_kv_heads, head_dim;
     int n_experts, top_k;
     float alpha, limit;          /* clamped-swiglu params */
+    int act_plain;               /* 1 = plain SwiGLU (silu(g)*u), 0 = gpt-oss clamp */
+    int router_norm;             /* 1 = softmax over selected; 0 = full-softmax weights */
+    int qk_norm;                 /* per-head RMSNorm on q,k before RoPE */
     int sliding_window;
     int sinks;
     float norm_eps;
@@ -63,6 +67,7 @@ typedef struct {
     WT *wq, *wk, *wv, *wo, *router_w;          /* per layer */
     const float **bq, **bk, **bv, **bo, **router_b;
     const float **attn_norm, **mlp_norm, **sink;
+    const float **qn, **kn;                     /* qk-norm weights [head_dim] */
     /* runtime */
     int ctx;
     uint16_t **kc, **vc;         /* per layer f16 KV; sliding layers use ring of window slots */
@@ -95,9 +100,13 @@ static void spec_load(Spec *s, WJ *j) {
     s->top_k = (int)wj_numd(moe, "top_k", 0);
     s->alpha = (float)wj_numd(moe, "alpha", 1.702);
     s->limit = (float)wj_numd(moe, "limit", 7.0);
+    const char *act = wj_strd(moe, "act", "swiglu_clamp");
+    s->act_plain = act && !strcmp(act, "swiglu");
+    s->router_norm = (int)wj_numd(moe, "router_norm", 1);
     WJ *attn = wj_get(j, "attn");
     s->sliding_window = (int)wj_numd(attn, "sliding_window", 0);
     s->sinks = (int)wj_numd(attn, "sinks", 0);
+    s->qk_norm = (int)wj_numd(attn, "qk_norm", 0);
     s->attn_scale = (float)wj_numd(attn, "scale", 1.0 / sqrt((double)s->head_dim));
     s->layer_sliding = (int *)calloc(s->n_layers, sizeof(int));
     WJ *lt = wj_get(attn, "layer_types");
@@ -219,6 +228,8 @@ static void model_load(Model *m, const char *dir, int ctx) {
     m->bq = calloc(L, sizeof(void *)); m->bk = calloc(L, sizeof(void *));
     m->bv = calloc(L, sizeof(void *)); m->bo = calloc(L, sizeof(void *));
     m->router_b = calloc(L, sizeof(void *));
+    m->qn = calloc(L, sizeof(void *));
+    m->kn = calloc(L, sizeof(void *));
     m->attn_norm = calloc(L, sizeof(void *)); m->mlp_norm = calloc(L, sizeof(void *));
     m->sink = calloc(L, sizeof(void *));
     for (int i = 0; i < L; i++) {
@@ -230,6 +241,7 @@ static void model_load(Model *m, const char *dir, int ctx) {
         GETV(attn_norm, "L%d.attn.norm"); GETV(mlp_norm, "L%d.mlp.norm");
         GETM(router_w, "L%d.router.w"); GETV(router_b, "L%d.router.b");
         if (s->sinks) { GETV(sink, "L%d.attn.sinks"); }
+        if (s->qk_norm) { GETV(qn, "L%d.attn.q_norm"); GETV(kn, "L%d.attn.k_norm"); }
         #undef GETM
         #undef GETV
     }
@@ -324,6 +336,14 @@ static void attention(Model *m, int layer, int pos) {
     wk_matvec(&m->wq[layer], m->xb, m->q); wk_addbias(m->q, m->bq[layer], (int64_t)nh * hd);
     wk_matvec(&m->wk[layer], m->xb, m->k); wk_addbias(m->k, m->bk[layer], kv_dim);
     wk_matvec(&m->wv[layer], m->xb, m->v); wk_addbias(m->v, m->bv[layer], kv_dim);
+    if (s->qk_norm) {              /* per-head RMSNorm on q,k before RoPE */
+        for (int h = 0; h < nh; h++)
+            wk_rmsnorm(m->q + (size_t)h * hd, m->qn[layer], m->q + (size_t)h * hd,
+                       hd, s->norm_eps);
+        for (int h = 0; h < nkv; h++)
+            wk_rmsnorm(m->k + (size_t)h * hd, m->kn[layer], m->k + (size_t)h * hd,
+                       hd, s->norm_eps);
+    }
     rope_apply(m, m->q, nh, pos);
     rope_apply(m, m->k, nkv, pos);
 
@@ -385,8 +405,16 @@ static void moe(Model *m, int layer) {
         }
     }
     float mx = val[0], den = 0.f, w[MAX_TOPK];
-    for (int i = 0; i < k; i++) { w[i] = expf(val[i] - mx); den += w[i]; }
-    for (int i = 0; i < k; i++) w[i] /= den;
+    if (s->router_norm) {          /* softmax over the selected logits */
+        for (int i = 0; i < k; i++) { w[i] = expf(val[i] - mx); den += w[i]; }
+        for (int i = 0; i < k; i++) w[i] /= den;
+    } else {                       /* weights from full softmax, unnormalized */
+        float fmx = m->rl[0];
+        for (int e = 1; e < s->n_experts; e++) if (m->rl[e] > fmx) fmx = m->rl[e];
+        float fden = 0.f;
+        for (int e = 0; e < s->n_experts; e++) fden += expf(m->rl[e] - fmx);
+        for (int i = 0; i < k; i++) w[i] = expf(val[i] - fmx) / fden;
+    }
 
     memset(m->moe, 0, (size_t)s->hidden * 4);
     for (int i = 0; i < k; i++) {
@@ -399,13 +427,20 @@ static void moe(Model *m, int layer) {
         wt_expert(&m->experts, &m->exl, layer, e, 2, &down, &bd);
         wk_matvec(&gate, m->xb, m->hb);  wk_addbias(m->hb, bg, s->ffn);
         wk_matvec(&up, m->xb, m->hb2);   wk_addbias(m->hb2, bu, s->ffn);
-        for (int64_t j = 0; j < s->ffn; j++) {
-            float g = m->hb[j], u = m->hb2[j];
-            if (g > s->limit) g = s->limit;
-            if (u > s->limit) u = s->limit;
-            if (u < -s->limit) u = -s->limit;
-            float act = g / (1.0f + expf(-s->alpha * g));
-            m->hb[j] = act * (u + 1.0f);
+        if (s->act_plain) {
+            for (int64_t j = 0; j < s->ffn; j++) {
+                float g = m->hb[j];
+                m->hb[j] = g / (1.0f + expf(-g)) * m->hb2[j];     /* silu(g)*u */
+            }
+        } else {
+            for (int64_t j = 0; j < s->ffn; j++) {
+                float g = m->hb[j], u = m->hb2[j];
+                if (g > s->limit) g = s->limit;
+                if (u > s->limit) u = s->limit;
+                if (u < -s->limit) u = -s->limit;
+                float act = g / (1.0f + expf(-s->alpha * g));
+                m->hb[j] = act * (u + 1.0f);
+            }
         }
         /* down proj into xb (reuse), weighted-accumulate into moe */
         float *tmp = m->hb2; (void)tmp;
@@ -481,7 +516,43 @@ static void print_logits(Model *m) {
     printf("\n");
 }
 
+static int run_bench(void) {
+    /* standardized measurement of the actual expert kernel: q4g32
+       matvec at gpt-oss expert shape, all cores. Prints effective
+       GB/s of quantized weights streamed (data+scales). */
+    const int64_t rows = 2880, cols = 2880;
+    size_t db = (size_t)rows * cols / 2;
+    size_t sb = (size_t)rows * (cols / 32) * 2;
+    uint8_t *data = malloc(db);
+    uint16_t *sc = malloc(sb);
+    float *x = malloc(cols * 4), *y = malloc(rows * 4);
+    if (!data || !sc || !x || !y) return 1;
+    for (size_t i = 0; i < db; i++) data[i] = (uint8_t)(i * 2654435761u >> 24);
+    for (size_t i = 0; i < sb / 2; i++) sc[i] = 0x2c00;   /* f16 ~0.0625 */
+    for (int64_t i = 0; i < cols; i++) x[i] = 0.5f;
+    WT w = {0};
+    w.dt = DT_Q4G32; w.rows = rows; w.cols = cols;
+    w.data = data; w.scales = (uint8_t *)sc;
+    /* warmup + timed loop */
+    for (int i = 0; i < 3; i++) wk_matvec(&w, x, y);
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    int iters = 0;
+    double el = 0;
+    do {
+        wk_matvec(&w, x, y);
+        iters++;
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        el = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) * 1e-9;
+    } while (el < 1.0);
+    double gbps = (double)iters * (db + sb) / el / (1024.0 * 1024.0 * 1024.0);
+    printf("BENCH q4g32_gbps=%.3f threads=%d\n", gbps, omp_get_max_threads());
+    free(data); free(sc); free(x); free(y);
+    return 0;
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && !strcmp(argv[1], "--bench")) return run_bench();
     const char *dir = NULL;
     int ctx = 4096, ngen_default = 512, stats = 1;
     float temp = 0.0f, topp = 0.9f;

@@ -93,6 +93,22 @@ a{color:var(--amber2)}
       <button id="start" disabled>Start download &amp; setup</button>
       <span class="hint" id="diskhint"></span>
     </div>
+    <h2>or any Hugging Face model</h2>
+    <div class="card">
+      <div class="chatbar" style="margin-top:0">
+        <input id="repoin" placeholder="e.g. mistralai/Mixtral-8x7B-Instruct-v0.1"
+               autocomplete="off" spellcheck="false">
+        <button id="checkbtn" class="ghost">Check</button>
+      </div>
+      <pre id="checkout" class="hidden" style="font:12px/1.6 var(--mono);
+        color:var(--mut);margin-top:12px;white-space:pre-wrap"></pre>
+      <div class="actions hidden" id="customgo">
+        <button id="startcustom">Download &amp; set up this model</button>
+      </div>
+      <div class="hint">midge fetches only config.json to judge the
+        architecture, then measures this device (engine kernel, disk, RAM)
+        before any download starts.</div>
+    </div>
   </section>
 
   <section id="progress" class="hidden">
@@ -262,6 +278,26 @@ $("start").onclick = async () => {
 $("retry").onclick = async () => {
   await api("/api/setup", {model: state.job.model});
   $("retry").classList.add("hidden"); pollJob();
+};
+$("checkbtn").onclick = async () => {
+  const src = $("repoin").value.trim();
+  if (!src) return;
+  $("checkbtn").disabled = true; $("checkout").classList.remove("hidden");
+  $("checkout").textContent = "checking architecture + benchmarking device…";
+  try{
+    const r = await api("/api/check", {source: src});
+    $("checkout").textContent = r.pretty;
+    const ok = r.report.verdict === "yes" || r.report.verdict === "tight";
+    $("customgo").classList.toggle("hidden", !ok);
+  } catch(e){ $("checkout").textContent = "⚠ " + e.message; }
+  $("checkbtn").disabled = false;
+};
+$("startcustom").onclick = async () => {
+  const src = $("repoin").value.trim();
+  try{
+    await api("/api/setup", {source: src});
+    showProgress(); pollJob();
+  } catch(e){ alert(e.message); }
 };
 $("send").onclick = send;
 $("chatin").addEventListener("keydown", e => { if (e.key === "Enter") send(); });
