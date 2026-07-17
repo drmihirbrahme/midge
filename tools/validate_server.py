@@ -63,7 +63,7 @@ def main():
     port = free_port()
     srv = subprocess.Popen(
         [sys.executable, os.path.join(ROOT, "tools/serve.py"), model_dir,
-         "--port", str(port), "--ctx", "220", "--backend", opts.backend]
+         "--port", str(port), "--ctx", "640", "--backend", opts.backend]
         + (["--device", "cpu", "--dense-bits", "32"]
            if opts.backend == "mlx" else []),
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -162,6 +162,54 @@ def main():
             extra_body={"reasoning_effort": "none"}, messages=sys_u)
         assert getattr(r7.choices[0].message, "reasoning_content", None) is None
         print("[validate_server] reasoning_effort / enable_thinking    OK")
+
+        # ---- tool calling: the agent loop -----------------------------
+        WEATHER = [{"type": "function", "function": {
+            "name": "get_weather", "description": "Get current weather",
+            "parameters": {"type": "object", "properties": {
+                "city": {"type": "string", "description": "City name"}},
+                "required": ["city"]}}}]
+        # 1) tools render into the prompt (developer block costs tokens)
+        r_plain = c.chat.completions.create(model=m, max_tokens=4,
+            temperature=0, messages=sys_u)
+        r_tools = c.chat.completions.create(model=m, max_tokens=4,
+            temperature=0, messages=sys_u, tools=WEATHER)
+        assert r_tools.usage.prompt_tokens > r_plain.usage.prompt_tokens + 20, \
+            "tools were not rendered into the prompt"
+        # 2) tool-call OUTPUT parsing: teacher-force a harmony tool call
+        #    through the real parser via the sampling path is impossible on a
+        #    random model, so drive the parser with real tokenizer ids
+        import serve as srv_mod
+        from tokenizers import Tokenizer
+        from harmony import Harmony
+        tok = Tokenizer.from_file(os.path.join(model_dir, "tokenizer.json"))
+        h = Harmony(tok, {"tokenizer": {}})
+        parser = srv_mod.ChannelParser(h)
+        seq = tok.encode('<|channel|>commentary to=functions.get_weather '
+                         '<|constrain|>json<|message|>{"city": "Pune"}'
+                         '<|call|>').ids
+        got_name, got_args = None, []
+        for t in seq:
+            for kind, delta in parser.feed(t):
+                if kind.startswith("tool:"):
+                    got_name = kind[5:]
+                    got_args.append(delta)
+        assert got_name == "get_weather", got_name
+        assert "".join(got_args) == '{"city": "Pune"}', "".join(got_args)
+        # 3) tool-history replay: assistant tool_calls + tool result render
+        call = {"id": "call_abc", "type": "function",
+                "function": {"name": "get_weather",
+                             "arguments": '{"city": "Pune"}'}}
+        replay = sys_u + [
+            {"role": "assistant", "content": None, "tool_calls": [call]},
+            {"role": "tool", "tool_call_id": "call_abc", "content": "22C"},
+        ]
+        r_replay = c.chat.completions.create(model=m, max_tokens=4,
+            temperature=0, messages=replay, tools=WEATHER)
+        assert r_replay.usage.prompt_tokens > r_tools.usage.prompt_tokens + 10
+        assert r_replay.choices[0].finish_reason in ("stop", "length",
+                                                     "tool_calls")
+        print("[validate_server] tool calling: render/parse/replay      OK")
 
         req = urllib.request.Request(base + "/v1/completions",
             data=json.dumps({"prompt": "hi", "max_tokens": 6}).encode(),

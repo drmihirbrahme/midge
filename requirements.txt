@@ -1,0 +1,8 @@
+# midge runtime dependencies (Python 3.9+)
+numpy>=1.24
+tokenizers>=0.15
+huggingface_hub>=0.20
+
+# optional:
+#   mlx            Apple Silicon (or mlx[cuda] / mlx[cpu] on Linux)
+#   openai         only needed to run the server test suite

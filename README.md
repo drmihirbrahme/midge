@@ -62,20 +62,24 @@ gentler IO.
 
 ## Installation
 
-Requirements: Linux (or macOS for the MLX engine), gcc with OpenMP,
-Python 3.9+.
-
 ```bash
 git clone https://github.com/drmihirbrahme/midge && cd midge
-make                                   # builds ./midged (the C engine)
-pip install numpy tokenizers huggingface_hub
+./install.sh
 ```
 
-On Apple Silicon, additionally:
+The installer checks your toolchain, installs the Python dependencies
+(`requirements.txt`), builds the engine, and runs a smoke test.
+Prerequisites by OS:
 
-```bash
-pip install mlx
-```
+* **Ubuntu/Debian**: `sudo apt install build-essential python3-pip git`
+* **macOS**: `xcode-select --install` — the C engine builds
+  single-threaded there (Apple's clang lacks OpenMP); Apple Silicon
+  users should use the MLX engine instead: `pip install mlx`, then
+  `./midge-mlx` / `--backend mlx`
+* **NVIDIA GPU (Linux)**: additionally `pip install "mlx[cuda]"`
+
+Manual install is just `pip install -r requirements.txt && make`.
+Python 3.9+ required.
 
 ## Usage
 

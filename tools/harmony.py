@@ -11,7 +11,7 @@ class Harmony:
     """Chat formatting + streaming display for gpt-oss's harmony format."""
 
     SPECIALS = ["<|start|>", "<|message|>", "<|end|>", "<|channel|>",
-                "<|return|>", "<|call|>"]
+                "<|return|>", "<|call|>", "<|constrain|>"]
 
     def __init__(self, tok, spec):
         self.tok = tok

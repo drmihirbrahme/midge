@@ -24,6 +24,18 @@ sys.path.insert(0, os.path.join(ROOT, "tools"))
 from harmony import Harmony  # noqa: E402
 
 
+def need(*mods):
+    missing = []
+    for m in mods:
+        try:
+            __import__(m)
+        except ImportError:
+            missing.append(m)
+    if missing:
+        die(f"missing Python package(s): {', '.join(missing)}\n"
+            "  install everything with:  pip install -r requirements.txt")
+
+
 def die(msg):
     print(f"midge: {msg}", file=sys.stderr)
     sys.exit(1)
@@ -209,6 +221,10 @@ def main():
     pl.add_argument("--dense", default="q8r", choices=["q8r", "f32"])
     pl.add_argument("--ctx", type=int, default=8192)
 
+    if len(sys.argv) > 1 and sys.argv[1] in ("convert", "plan", "check"):
+        need("numpy")
+    if len(sys.argv) > 1 and sys.argv[1] in ("chat", "run", "serve", "ui"):
+        need("numpy", "tokenizers") if sys.argv[1] != "ui" else need("numpy")
     if len(sys.argv) > 1 and sys.argv[1] == "convert":
         return cmd_convert(None, sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == "serve":

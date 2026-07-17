@@ -30,7 +30,11 @@
 #include <stdint.h>
 #include <math.h>
 #include <time.h>
+#ifdef _OPENMP
 #include <omp.h>
+#else
+static int omp_get_max_threads(void) { return 1; }
+#endif
 #include <errno.h>
 #include "mjson.h"
 #include "mten.h"

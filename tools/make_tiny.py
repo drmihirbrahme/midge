@@ -37,7 +37,7 @@ CFG = {
     "sliding_window": 8,
     "layer_types": ["sliding_attention", "full_attention"],
     "swiglu_limit": 7.0,
-    "max_position_embeddings": 256,
+    "max_position_embeddings": 2048,
     "eos_token_id": 127,
     "rope_scaling": {
         "rope_type": "yarn",
@@ -135,10 +135,10 @@ def write_tiny_tokenizer(path: str, vocab_size: int):
     the full chat pipeline can be exercised without downloading anything.
     Special tokens mirror o200k_harmony's control tokens."""
     specials = ["<|start|>", "<|message|>", "<|end|>", "<|channel|>",
-                "<|return|>", "<|call|>", "<unk>"]
+                "<|return|>", "<|call|>", "<|constrain|>", "<unk>"]
     vocab = {t: i for i, t in enumerate(specials)}
     import string
-    for ch in string.ascii_letters + string.digits + string.punctuation.replace('"', '') + " ":
+    for ch in string.ascii_letters + string.digits + string.punctuation + " ":
         if len(vocab) >= vocab_size:
             break
         vocab[ch] = len(vocab)
@@ -176,7 +176,7 @@ def make_other(args, rng):
         "num_attention_heads": nh, "num_key_value_heads": nkv, "head_dim": hd,
         "vocab_size": V, "num_experts_per_tok": 2,
         "rms_norm_eps": 1e-5, "rope_theta": 10000.0,
-        "max_position_embeddings": 256, "eos_token_id": 127,
+        "max_position_embeddings": 2048, "eos_token_id": 127,
         "tie_word_embeddings": qwen,
     }
     if qwen:

@@ -55,6 +55,96 @@ from engine_client import EngineProc, EngineError
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+# ------------------------------------------------------------ tools
+def ts_type(schema) -> str:
+    """JSON schema -> TypeScript-ish type (harmony's tool declaration style)."""
+    if not isinstance(schema, dict):
+        return "any"
+    if "enum" in schema:
+        return " | ".join(json.dumps(v) for v in schema["enum"])
+    t = schema.get("type")
+    if t == "string":
+        return "string"
+    if t in ("number", "integer"):
+        return "number"
+    if t == "boolean":
+        return "boolean"
+    if t == "array":
+        return ts_type(schema.get("items", {})) + "[]"
+    if t == "object" or "properties" in schema:
+        props = schema.get("properties", {})
+        req = set(schema.get("required", []))
+        parts = []
+        for k, v in props.items():
+            if v.get("description"):
+                parts.append(f"// {v['description']}")
+            parts.append(f"{k}{'' if k in req else '?'}: {ts_type(v)},")
+        return "{\n" + "\n".join(parts) + "\n}"
+    return "any"
+
+
+def tools_developer_text(tools) -> str:
+    L = ["# Tools", "", "## functions", "", "namespace functions {", ""]
+    for t in tools:
+        f = t.get("function", t)
+        if f.get("description"):
+            L.append(f"// {f['description']}")
+        params = f.get("parameters")
+        if params and params.get("properties"):
+            L.append(f"type {f['name']} = (_: {ts_type(params)}) => any;")
+        else:
+            L.append(f"type {f['name']} = () => any;")
+        L.append("")
+    L.append("} // namespace functions")
+    return "\n".join(L)
+
+
+def canon(m) -> tuple:
+    """Normalized message identity for session-cache comparison."""
+    calls = tuple(sorted(
+        (c.get("function", {}).get("name", ""),
+         c.get("function", {}).get("arguments", ""))
+        for c in (m.get("tool_calls") or [])))
+    return (m.get("role", ""), m.get("content") or "", calls,
+            m.get("tool_call_id") or "")
+
+
+def render_messages(h: Harmony, msgs) -> list:
+    """Harmony rendering that understands the OpenAI message shapes an
+    agent sends: tool definitions, assistant tool_calls, tool results."""
+    id2name = {}
+    for m in msgs:
+        for c in (m.get("tool_calls") or []):
+            id2name[c.get("id")] = c.get("function", {}).get("name", "tool")
+    ids = []
+    for m in msgs:
+        role = m.get("role", "user")
+        content = m.get("content") or ""
+        if role == "_tools":
+            ids += h.enc(f"<|start|>developer<|message|>{content}<|end|>")
+        elif role == "assistant" and m.get("tool_calls"):
+            if content:
+                ids += h.enc("<|start|>assistant<|channel|>analysis"
+                             f"<|message|>{content}<|end|>")
+            for c in m["tool_calls"]:
+                f = c.get("function", {})
+                ids += h.enc(
+                    "<|start|>assistant<|channel|>commentary "
+                    f"to=functions.{f.get('name', 'tool')} <|constrain|>json"
+                    f"<|message|>{f.get('arguments', '')}<|call|>")
+        elif role == "tool":
+            name = id2name.get(m.get("tool_call_id"), "tool")
+            ids += h.enc(f"<|start|>functions.{name} to=assistant"
+                         f"<|channel|>commentary<|message|>{content}<|end|>")
+        elif role == "assistant":
+            ids += h.enc(f"<|start|>assistant<|channel|>final"
+                         f"<|message|>{content}<|end|>")
+        else:
+            ids += h.enc(f"<|start|>{role}<|message|>{content}<|end|>")
+    ids += h.enc("<|start|>assistant")
+    return ids
+
+
 # ----------------------------------------------------------- harmony IO
 class ChannelParser:
     """Incremental parser for generated harmony tokens: feeds back
@@ -66,6 +156,7 @@ class ChannelParser:
         self.rid = {v: k for k, v in h.id.items()}
         self.mode = "text"
         self.channel = "final"
+        self.recipient = None
         self.buf, self.printed = [], 0
         self.header = []
 
@@ -81,7 +172,9 @@ class ChannelParser:
                 text = self.h.tok.decode(self.buf, skip_special_tokens=False)
                 new = text[self.printed:]
                 if new:
-                    out.append((self.channel, new))
+                    kind = ("tool:" + self.recipient) if self.recipient \
+                        else self.channel
+                    out.append((kind, new))
                     self.printed = len(text)
             return out
         if name == "<|channel|>":
@@ -90,10 +183,15 @@ class ChannelParser:
             if self.mode == "channel":
                 self.channel = self.h.tok.decode(
                     self.header, skip_special_tokens=False).strip()
+                self.recipient = None
+                for part in self.channel.replace("<|constrain|>", " ").split():
+                    if part.startswith("to=functions."):
+                        self.recipient = part[len("to=functions."):]
             self.buf, self.printed, self.mode = [], 0, "text"
         elif name in ("<|end|>", "<|return|>", "<|call|>"):
             self.buf, self.printed = [], 0
             self.channel, self.mode = "final", "text"
+            self.recipient = None
         elif name == "<|start|>":
             self.buf, self.printed, self.mode = [], 0, "text"
         return out
@@ -177,21 +275,43 @@ class Session:
         whole conversation; cached_tokens is the part the session cache
         let us skip."""
         n = len(self.msgs)
-        if n and len(messages) > n and messages[:n] == self.msgs:
+        if n and len(messages) > n and \
+                [canon(m) for m in messages[:n]] == [canon(m) for m in self.msgs]:
             delta = messages[n:]
         else:
             if self.msgs or self.eng.n_ctx:
                 self.eng.restart()
             delta = messages
             self.msgs = []
-        ids = self.h.render(delta, add_generation_prefix=True)
+        ids = render_messages(self.h, delta)
         cached = self.eng.n_ctx if self.msgs else 0
+        if cached + len(ids) + 8 > self.args.ctx:
+            raise EngineError(
+                f"request needs {cached + len(ids)} prompt tokens but the "
+                f"server context is {self.args.ctx} — start the server with "
+                "a larger --ctx or shorten the conversation/tools")
         self.eng.prefill(ids)
         self.msgs = self.msgs + list(delta)
         return cached + len(ids), cached
 
     def chat(self, messages, max_tokens, temp, topp, stop_strs, on_event,
              seed=None):
+        try:
+            return self._chat(messages, max_tokens, temp, topp, stop_strs,
+                              on_event, seed)
+        except (BrokenPipeError, ConnectionResetError):
+            raise
+        except Exception:
+            # unknown engine state: reset so the next request works
+            self.msgs = []
+            try:
+                self.eng.restart()
+            except Exception:
+                pass
+            raise
+
+    def _chat(self, messages, max_tokens, temp, topp, stop_strs, on_event,
+              seed=None):
         """Run one chat turn. on_event(channel, delta) streams text.
         Returns (final_text, reasoning_text, finish_reason, usage)."""
         with self.lock:
@@ -200,8 +320,8 @@ class Session:
                                   0.9 if topp is None else float(topp),
                                   seed=int(seed) if seed is not None else None)
             parser = ChannelParser(self.h)
-            final, reasoning = [], []
-            state = {"stopped": False, "n_gen": 0}
+            final, reasoning, tool_args = [], [], []
+            state = {"stopped": False, "n_gen": 0, "tool": None}
 
             def on_token(t):
                 state["n_gen"] += 1
@@ -213,6 +333,13 @@ class Session:
                             state["stopped"] = True
                             return False
                         on_event("final", delta)
+                    elif ch.startswith("tool:"):
+                        name = ch[5:]
+                        if state["tool"] != name:
+                            state["tool"] = name
+                            on_event("tool_start", name)
+                        tool_args.append(delta)
+                        on_event("tool_args", delta)
                     else:
                         reasoning.append(delta)
                         on_event("reasoning", delta)
@@ -225,6 +352,7 @@ class Session:
                                      chunk=self.args.chunk)
             final_text = "".join(final)
             reasoning_text = "".join(reasoning)
+            tool_calls = []
             if state["stopped"]:
                 fin = "stop"
                 for ss in stop_strs:
@@ -233,6 +361,16 @@ class Session:
                         final_text = final_text[:i]
                 self.msgs = []
                 self.eng.restart()      # context has extra tokens: resync later
+            elif last in self.h.stop_ids and state["tool"]:
+                fin = "tool_calls"
+                call = {"id": "call_" + uuid.uuid4().hex[:20],
+                        "type": "function",
+                        "function": {"name": state["tool"],
+                                     "arguments": "".join(tool_args)}}
+                self.msgs = self.msgs + [
+                    {"role": "assistant", "content": None,
+                     "tool_calls": [call]}]
+                tool_calls = [call]
             elif last in self.h.stop_ids:
                 fin = "stop"            # clean end: context is reusable
                 self.msgs = self.msgs + [
@@ -245,7 +383,7 @@ class Session:
                      "completion_tokens": state["n_gen"],
                      "total_tokens": n_prompt + state["n_gen"],
                      "prompt_tokens_details": {"cached_tokens": n_cached}}
-            return final_text, reasoning_text, fin, usage
+            return final_text, reasoning_text, fin, usage, tool_calls
 
 
 # ----------------------------------------------------------------- http
@@ -336,6 +474,17 @@ class Handler(BaseHTTPRequestHandler):
         if msgs[0]["role"] != "system":
             msgs = [{"role": "system",
                      "content": self.S.args.system}] + msgs
+        tools = body.get("tools") or []
+        if tools:
+            sysmsg = msgs[0]
+            if "Valid channels" not in sysmsg["content"]:
+                sysmsg["content"] += (
+                    "\n# Valid channels: analysis, commentary, final. "
+                    "Channel must be added to every message.\n"
+                    "Calls to these tools must go to the commentary "
+                    "channel: 'functions'.")
+            msgs.insert(1, {"role": "_tools",
+                            "content": tools_developer_text(tools)})
         max_tokens = int(body.get("max_tokens")
                          or body.get("max_completion_tokens") or 1024)
         temp = body.get("temperature")
@@ -368,11 +517,26 @@ class Handler(BaseHTTPRequestHandler):
                       {"role": "assistant", "content": ""},
                       "finish_reason": None}]})
 
+            tstate = {"id": None}
+
             def on_event(ch, delta):
                 try:
                     if ch == "final":
                         self._sse({**base, "choices": [{"index": 0,
                                   "delta": {"content": delta},
+                                  "finish_reason": None}]})
+                    elif ch == "tool_start":
+                        tstate["id"] = "call_" + uuid.uuid4().hex[:20]
+                        self._sse({**base, "choices": [{"index": 0, "delta": {
+                                  "tool_calls": [{"index": 0, "id": tstate["id"],
+                                                  "type": "function",
+                                                  "function": {"name": delta,
+                                                               "arguments": ""}}]},
+                                  "finish_reason": None}]})
+                    elif ch == "tool_args":
+                        self._sse({**base, "choices": [{"index": 0, "delta": {
+                                  "tool_calls": [{"index": 0,
+                                                  "function": {"arguments": delta}}]},
                                   "finish_reason": None}]})
                     elif include_reasoning:
                         self._sse({**base, "choices": [{"index": 0,
@@ -381,7 +545,7 @@ class Handler(BaseHTTPRequestHandler):
                 except (BrokenPipeError, ConnectionResetError):
                     raise
             try:
-                final, reasoning, fin, usage = self.S.chat(
+                final, reasoning, fin, usage, tool_calls = self.S.chat(
                     msgs, max_tokens, temp, topp, stop, on_event,
                     seed=body.get("seed"))
             except (BrokenPipeError, ConnectionResetError):
@@ -401,13 +565,16 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            final, reasoning, fin, usage = self.S.chat(
+            final, reasoning, fin, usage, tool_calls = self.S.chat(
                 msgs, max_tokens, temp, topp, stop, lambda ch, d: None,
                 seed=body.get("seed"))
         except EngineError as e:
             return self._err(500, str(e))
         usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]
-        message = {"role": "assistant", "content": final}
+        message = {"role": "assistant",
+                   "content": None if tool_calls else final}
+        if tool_calls:
+            message["tool_calls"] = tool_calls
         if reasoning and include_reasoning:
             message["reasoning_content"] = reasoning
         self._json(200, {"id": rid, "object": "chat.completion",
@@ -427,7 +594,7 @@ class Handler(BaseHTTPRequestHandler):
         if isinstance(stop, str):
             stop = [stop]
         try:
-            final, _, fin, usage = self.S.chat(
+            final, _, fin, usage, _tc = self.S.chat(
                 msgs, max_tokens, body.get("temperature"),
                 body.get("top_p"), stop, lambda ch, d: None)
         except EngineError as e:
