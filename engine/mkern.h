@@ -61,7 +61,134 @@ static void mv_g32(const uint8_t *W, const uint16_t *S, const float *x, float *y
     }
 }
 
+
+/* ---------------------------------------------------------------------
+ * AVX2+FMA kernels (runtime-dispatched; scalar above remains the
+ * portable fallback). Strategy: de-interleave x once per matvec into
+ * even/odd streams so packed nibbles need no per-group shuffling, then
+ * widen -> cvt -> FMA. FP4 decode via a signed pshufb LUT of doubled
+ * magnitudes, folding the 0.5 into the group scale.
+ * ------------------------------------------------------------------- */
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+
+__attribute__((target("avx2,fma")))
+static inline float hsum256(__m256 v) {
+    __m128 lo = _mm256_castps256_ps128(v), hi = _mm256_extractf128_ps(v, 1);
+    lo = _mm_add_ps(lo, hi);
+    lo = _mm_add_ps(lo, _mm_movehl_ps(lo, lo));
+    lo = _mm_add_ss(lo, _mm_shuffle_ps(lo, lo, 1));
+    return _mm_cvtss_f32(lo);
+}
+
+__attribute__((target("avx2,fma")))
+static void mv_f32_avx2(const float *W, const float *x, float *y,
+                        int64_t rows, int64_t cols) {
+    #pragma omp parallel for schedule(static)
+    for (int64_t r = 0; r < rows; r++) {
+        const float *w = W + r * cols;
+        __m256 acc = _mm256_setzero_ps();
+        int64_t c = 0;
+        for (; c + 8 <= cols; c += 8)
+            acc = _mm256_fmadd_ps(_mm256_loadu_ps(w + c),
+                                  _mm256_loadu_ps(x + c), acc);
+        float a = hsum256(acc);
+        for (; c < cols; c++) a += w[c] * x[c];
+        y[r] = a;
+    }
+}
+
+__attribute__((target("avx2,fma")))
+static void mv_q8r_avx2(const int8_t *W, const float *S, const float *x,
+                        float *y, int64_t rows, int64_t cols) {
+    #pragma omp parallel for schedule(static)
+    for (int64_t r = 0; r < rows; r++) {
+        const int8_t *w = W + r * cols;
+        __m256 acc = _mm256_setzero_ps();
+        int64_t c = 0;
+        for (; c + 8 <= cols; c += 8) {
+            __m128i b = _mm_loadl_epi64((const __m128i *)(w + c));
+            __m256 wf = _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(b));
+            acc = _mm256_fmadd_ps(wf, _mm256_loadu_ps(x + c), acc);
+        }
+        float a = hsum256(acc);
+        for (; c < cols; c++) a += (float)w[c] * x[c];
+        y[r] = a * S[r];
+    }
+}
+
+__attribute__((target("avx2,fma")))
+static void mv_g32_avx2(const uint8_t *W, const uint16_t *S, const float *x,
+                        float *y, int64_t rows, int64_t cols, int is_fp4) {
+    int64_t gpr = cols / 32, half = cols / 2;
+    /* x de-interleaved: xe[k] = x[2k], xo[k] = x[2k+1] */
+    float xe[half], xo[half];
+    for (int64_t k = 0; k < half; k++) { xe[k] = x[2 * k]; xo[k] = x[2 * k + 1]; }
+    /* FP4: signed doubled magnitudes; scale is folded as 0.5*scale */
+    const __m128i FP4X2 = _mm_setr_epi8(0, 1, 2, 3, 4, 6, 8, 12,
+                                        0, -1, -2, -3, -4, -6, -8, -12);
+    const __m128i LOW = _mm_set1_epi8(0x0F);
+    const __m128i EIGHT = _mm_set1_epi8(8);
+    #pragma omp parallel for schedule(static)
+    for (int64_t r = 0; r < rows; r++) {
+        const uint8_t *w = W + r * half;
+        const uint16_t *s = S + r * gpr;
+        __m256 acc = _mm256_setzero_ps();
+        for (int64_t g = 0; g < gpr; g++) {
+            __m128i b = _mm_loadu_si128((const __m128i *)(w + g * 16));
+            __m128i lo = _mm_and_si128(b, LOW);
+            __m128i hi = _mm_and_si128(_mm_srli_epi16(b, 4), LOW);
+            if (is_fp4) {
+                lo = _mm_shuffle_epi8(FP4X2, lo);   /* signed 2*value */
+                hi = _mm_shuffle_epi8(FP4X2, hi);
+            } else {
+                lo = _mm_sub_epi8(lo, EIGHT);
+                hi = _mm_sub_epi8(hi, EIGHT);
+            }
+            const float *pe = xe + g * 16, *po = xo + g * 16;
+            __m256 g0 = _mm256_mul_ps(
+                _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(lo)),
+                _mm256_loadu_ps(pe));
+            g0 = _mm256_fmadd_ps(
+                _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(lo, 8))),
+                _mm256_loadu_ps(pe + 8), g0);
+            g0 = _mm256_fmadd_ps(
+                _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(hi)),
+                _mm256_loadu_ps(po), g0);
+            g0 = _mm256_fmadd_ps(
+                _mm256_cvtepi32_ps(_mm256_cvtepi8_epi32(_mm_srli_si128(hi, 8))),
+                _mm256_loadu_ps(po + 8), g0);
+            float sc = wt_f16(s[g]) * (is_fp4 ? 0.5f : 1.0f);
+            acc = _mm256_fmadd_ps(_mm256_set1_ps(sc), g0, acc);
+        }
+        y[r] = hsum256(acc);
+    }
+}
+
+#include <stdlib.h>
+static int wk_have_avx2(void) {
+    static int have = -1;
+    if (have < 0)
+        have = !getenv("MIDGE_NO_SIMD")
+            && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+    return have;
+}
+#else
+static int wk_have_avx2(void) { return 0; }
+#endif  /* x86 */
+
 static void wk_matvec(const WT *t, const float *x, float *y) {
+#if defined(__x86_64__) || defined(__i386__)
+    if (wk_have_avx2()) {
+        switch (t->dt) {
+            case DT_F32:   mv_f32_avx2((const float *)t->data, x, y, t->rows, t->cols); return;
+            case DT_Q8R:   mv_q8r_avx2((const int8_t *)t->data, (const float *)t->scales, x, y, t->rows, t->cols); return;
+            case DT_Q4G32: mv_g32_avx2((const uint8_t *)t->data, (const uint16_t *)t->scales, x, y, t->rows, t->cols, 0); return;
+            case DT_MXFP4: mv_g32_avx2((const uint8_t *)t->data, (const uint16_t *)t->scales, x, y, t->rows, t->cols, 1); return;
+        }
+    }
+#endif
+    (void)wk_have_avx2;
     switch (t->dt) {
         case DT_F32:   mv_f32((const float *)t->data, x, y, t->rows, t->cols); break;
         case DT_Q8R:   mv_q8r((const int8_t *)t->data, (const float *)t->scales, x, y, t->rows, t->cols); break;

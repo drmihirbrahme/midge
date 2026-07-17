@@ -53,12 +53,27 @@ Two engines share one converted model directory:
   giant intermediate file — conversion streams shard-by-shard and needs
   only ~1 shard of scratch space.
 
-Expect roughly **0.5–2 tok/s** once the cache is warm on a typical 4–8
-core desktop with an NVMe disk, and slower, disk-bound decoding while
-cold (cold ≈ `disk_MB/s ÷ 1900` tok/s for 120b). This is a
-read-the-weights-every-token design: it will not race a GPU, it just runs
-where nothing else can. Start with **gpt-oss-20b** — same pipeline, much
-gentler IO.
+## Performance
+
+The kernels are runtime-dispatched: AVX2+FMA on x86 (≈8–9× the scalar
+fallback — measured 3.98 vs 0.48 GB/s/core on the same machine; scalar
+remains for ARM and can be forced with `MIDGE_NO_SIMD=1`). Threads scale
+across cores via OpenMP. Measured on a single cloud core with real
+gpt-oss expert dimensions: 12.2 tok/s warm on a 4-layer slice — which
+extrapolates to roughly **1–1.5 tok/s** for the full 36-layer 120b on
+one core, compute-side, and several× that on desktop core counts, where
+the real ceiling becomes cache hit rate and disk. Cold decoding is
+IO-bound: ≈ `disk_MB/s ÷ 1900` tok/s for 120b, so NVMe and
+`--preload-gb` matter. `./midge check` measures *your* kernel, disk and
+RAM and prints estimates for your machine.
+
+Honest framing: this is a read-the-weights-every-token design. It will
+not race a datacenter GPU serving the same model — its job is running
+models that don't fit your machine at all. For latency-sensitive agent
+use, prefer **gpt-oss-20b** (much gentler IO, higher cache hit rates),
+`--reasoning low`, streaming, and the session prefix cache (on by
+default in `midge serve`). On Apple Silicon or NVIDIA GPUs the MLX
+backend uses MLX's optimized kernels and is faster still.
 
 ## Installation
 
