@@ -98,6 +98,37 @@ def relay_tests(model_dir, opts):
         h, raw = post({})                      # upstream dead -> local fallback
         assert json.loads(raw)["midge_served_by"] == "local"
         print("[validate_server] hybrid relay: cloud/override/stream/fallback OK")
+
+        # circuit breaker: a black-hole upstream taxes exactly one request
+        bh_port = free_port()
+        blackhole = subprocess.Popen(
+            [sys.executable, os.path.join(ROOT, "tools/serve.py"), model_dir,
+             "--port", str(bh_port), "--ctx", "640", "--backend", opts.backend,
+             "--upstream", "http://10.255.255.1:9/v1",
+             "--upstream-timeout", "2", "--route", "auto"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            wait_health(bh_port)
+            from openai import OpenAI as _OA
+            bc = _OA(base_url=f"http://127.0.0.1:{bh_port}/v1", api_key="x",
+                     timeout=120)
+            t0 = time.time()
+            r = bc.chat.completions.create(model="m", max_tokens=4,
+                temperature=0, messages=[{"role": "user", "content": "hi"}])
+            first = time.time() - t0
+            assert r.model_extra.get("midge_served_by") == "local"
+            t0 = time.time()
+            r = bc.chat.completions.create(model="m", max_tokens=4,
+                temperature=0, messages=[{"role": "user", "content": "hi"}])
+            second = time.time() - t0
+            assert r.model_extra.get("midge_served_by") == "local"
+            assert second < max(1.5, first / 2), \
+                f"breaker did not engage: first={first:.1f}s second={second:.1f}s"
+            print(f"[validate_server] breaker: dead upstream taxes one request "
+                  f"({first:.1f}s), then local-fast ({second:.2f}s)  OK")
+        finally:
+            blackhole.terminate()
+            blackhole.wait(timeout=10)
     finally:
         for p in (upstream, hybrid):
             if p.poll() is None:

@@ -32,6 +32,26 @@ disk deciding how close you get to that when cold.
   --upstream-key $KEY --upstream-model gpt-oss-120b --route auto
 ```
 
+**What this is and isn't.** Hybrid mode does not make local inference
+faster — it lets an upstream you choose do the work at its speed. That
+upstream is whatever you point it at: a paid API provider (costs their
+prices), a provider's free tier, or — completely free — **your own
+second machine**: a gaming PC or workstation on your LAN running midge
+(or any OpenAI-compatible server) serves as the "cloud" for your laptop.
+
+**Zero-callout guarantee.** Without `--upstream`, midge makes no network
+requests at all while serving — there is no telemetry, no phoning home,
+and the only outbound connection in the server exists inside the relay
+code path, which is unreachable unless you configure an upstream.
+`--route local` and per-request `"midge_route": "local"` are absolute.
+
+**Local speed is never taxed.** Routing is an in-process check
+(nanoseconds). If a configured upstream dies, only the first request
+pays the relay timeout (`--upstream-timeout`, default 30 s); a circuit
+breaker then serves straight-local for 30 s before probing again —
+measured in the test suite: 2.1 s for the request that discovers the
+outage, 0.05 s for the next.
+
 One endpoint, one policy knob:
 
 * `--route local` — nothing ever leaves the machine (default when no

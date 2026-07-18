@@ -454,11 +454,15 @@ class Handler(BaseHTTPRequestHandler):
     def _err(self, code, msg):
         self._json(code, {"error": {"message": msg, "type": "invalid_request_error"}})
 
+    UPSTREAM_COOLDOWN = 30.0     # seconds of straight-local after a failure
+
     def _decide_route(self, body):
         want = body.pop("midge_route", None)
         mode = want if want in ("local", "cloud", "auto") else self.S.args.route
         if not self.S.args.upstream:
             return "local"
+        if mode == "auto" and time.time() < getattr(self.S, "up_down_until", 0):
+            return "local"           # breaker open: don't re-pay the timeout
         return mode
 
     def _relay_upstream(self, body, stream):
@@ -473,7 +477,7 @@ class Handler(BaseHTTPRequestHandler):
         req = urllib.request.Request(
             a.upstream.rstrip("/") + "/chat/completions",
             data=json.dumps(fwd).encode(), headers=hdrs)
-        resp = urllib.request.urlopen(req, timeout=300)
+        resp = urllib.request.urlopen(req, timeout=a.upstream_timeout)
         if stream:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -582,6 +586,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 if route == "cloud":
                     return self._err(502, f"upstream failed: {e}")
+                self.S.up_down_until = time.time() + self.UPSTREAM_COOLDOWN
                 # auto: transparent local fallback
         tools = body.get("tools") or []
         if tools:
@@ -755,6 +760,9 @@ def main(argv=None):
                          "local fallback always")
     ap.add_argument("--upstream-key", default=os.environ.get("MIDGE_UPSTREAM_KEY"),
                     help="API key for --upstream (or env MIDGE_UPSTREAM_KEY)")
+    ap.add_argument("--upstream-timeout", type=float, default=30.0,
+                    metavar="SEC", help="per-socket-op relay timeout "
+                    "(streams may run longer while bytes keep flowing)")
     ap.add_argument("--upstream-model", default=None,
                     help="model name to request upstream")
     ap.add_argument("--route", default=None, choices=["local", "cloud", "auto"],
