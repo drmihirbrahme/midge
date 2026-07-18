@@ -7,11 +7,31 @@
 ordinary CPU machine with a few GB of RAM, by keeping only the dense trunk
 resident and streaming the routed experts from disk.
 
-midge was inspired by [colibri](https://github.com/JustVugg/colibri), which
-proved the idea on GLM. midge generalizes it: a small spec-driven C engine
-plus a converter, so the same binary can run any model in the
-MoE-transformer family (GQA · RoPE/YaRN · top-k softmax router). The first
-supported models are **openai/gpt-oss-120b** and **gpt-oss-20b**.
+A small spec-driven C engine plus a converter, so one binary runs **any
+model in the MoE-transformer family it implements** — today that's
+**gpt-oss**, **Mixtral-style**, and **Qwen3-MoE-style** models (GQA ·
+RoPE/YaRN · top-k softmax router, with clamped/plain SwiGLU, QK-norm, and
+`norm_topk_prob` variants). Point `midge check <any-hugging-face-repo>` at
+a model and it tells you *before* you download whether this machine can
+run it — and names the reason if it can't (e.g. MLA or shared experts,
+which aren't implemented). Adding a family is a spec plus a tensor map,
+not a new engine.
+
+It also does more than run models locally:
+
+* an **OpenAI-compatible server** with streaming, a session prefix cache,
+  and **tool / function calling** — so agent frameworks (OpenClaw,
+  Hermes-style, anything that speaks the OpenAI API) work against it;
+* a **hybrid mode** that can relay permitted requests to a faster
+  upstream you choose — a cloud API, or your own GPU box on the LAN — at
+  that upstream's speed, and transparently fall back to the local model
+  when it's unavailable, with per-request privacy pinning;
+* a **web onboarding UI** (`./midge ui`) that downloads, converts, builds,
+  and opens a chat panel with zero terminal steps.
+
+midge began from [colibri](https://github.com/JustVugg/colibri), which
+proved disk-streamed experts on GLM; it has since grown into its own
+engine, converter, format, server, and toolchain.
 
 ```
 model            experts on disk   resident RAM (dense+KV)   cold IO/token
