@@ -17,6 +17,7 @@ built yet — with the math, so nobody has to take our word for it.
 | OpenMP threading | ~linear in cores until RAM bandwidth saturates | this VM has 1 core; desktops have 6–16 |
 | `--preload-gb` | pins the hottest experts in RAM | expert usage is very skewed; a few GB captures a large share of loads |
 | session prefix cache | agents skip re-prefilling conversation history | on by default in `midge serve` |
+| **batched prefill** | **3.3× cold prefill under 2× memory pressure** (194.6 s → 59.8 s for 96 tokens through 2.5 GB of experts with the model not fitting in RAM); neutral when the model fits (page cache already deduplicates reads); decode unchanged | prompts are processed layer-major in 64-token chunks and MoE runs expert-major, so each routed expert is read once per layer per chunk instead of once per token — the gap grows with memory pressure, and 120b-on-8 GB is ~30× pressured vs the 2× measured here; `MIDGE_NO_BATCH=1` forces per-token |
 | MLX backend | GPU speed on Apple Silicon / CUDA | `--backend mlx` |
 
 Rules of thumb after these: gpt-oss-**20b** is genuinely usable for

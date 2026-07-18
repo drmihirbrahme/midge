@@ -40,6 +40,7 @@ static int omp_get_max_threads(void) { return 1; }
 #include "mten.h"
 #include "mkern.h"
 
+#define BATCH_MAX 64
 #define MAX_TOPK 16
 
 typedef struct {
@@ -72,6 +73,8 @@ typedef struct {
     const float **bq, **bk, **bv, **bo, **router_b;
     const float **attn_norm, **mlp_norm, **sink;
     const float **qn, **kn;                     /* qk-norm weights [head_dim] */
+    float *bx, *bxb, *bw;                       /* batched-prefill scratch */
+    int *bsel;
     /* runtime */
     int ctx;
     uint16_t **kc, **vc;         /* per layer f16 KV; sliding layers use ring of window slots */
@@ -234,6 +237,10 @@ static void model_load(Model *m, const char *dir, int ctx) {
     m->router_b = calloc(L, sizeof(void *));
     m->qn = calloc(L, sizeof(void *));
     m->kn = calloc(L, sizeof(void *));
+    m->bx = malloc((size_t)BATCH_MAX * s->hidden * 4);
+    m->bxb = malloc((size_t)BATCH_MAX * s->hidden * 4);
+    m->bw = malloc((size_t)BATCH_MAX * MAX_TOPK * 4);
+    m->bsel = malloc((size_t)BATCH_MAX * MAX_TOPK * sizeof(int));
     m->attn_norm = calloc(L, sizeof(void *)); m->mlp_norm = calloc(L, sizeof(void *));
     m->sink = calloc(L, sizeof(void *));
     for (int i = 0; i < L; i++) {
@@ -390,6 +397,73 @@ static void attention(Model *m, int layer, int pos) {
     for (int64_t i = 0; i < s->hidden; i++) m->x[i] += m->xb[i];
 }
 
+/* top-k routing for the (already attention-updated) residual x.
+   Writes normalized weights + expert ids; input is the raw residual. */
+static void route_topk(Model *m, int layer, const float *x, float *xb,
+                       int *sel, float *w) {
+    Spec *s = &m->s;
+    wk_rmsnorm(x, m->mlp_norm[layer], xb, s->hidden, s->norm_eps);
+    wk_matvec(&m->router_w[layer], xb, m->rl);
+    wk_addbias(m->rl, m->router_b[layer], s->n_experts);
+    int k = s->top_k;
+    float val[MAX_TOPK];
+    for (int j = 0; j < k; j++) { val[j] = -1e30f; sel[j] = 0; }
+    for (int e = 0; e < s->n_experts; e++) {
+        float v = m->rl[e];
+        for (int j = 0; j < k; j++) {
+            if (v > val[j]) {
+                for (int q = k - 1; q > j; q--) { val[q] = val[q-1]; sel[q] = sel[q-1]; }
+                val[j] = v; sel[j] = e;
+                break;
+            }
+        }
+    }
+    float mx = val[0], den = 0.f;
+    if (s->router_norm) {
+        for (int i = 0; i < k; i++) { w[i] = expf(val[i] - mx); den += w[i]; }
+        for (int i = 0; i < k; i++) w[i] /= den;
+    } else {
+        float fmx = m->rl[0];
+        for (int e = 1; e < s->n_experts; e++) if (m->rl[e] > fmx) fmx = m->rl[e];
+        float fden = 0.f;
+        for (int e = 0; e < s->n_experts; e++) fden += expf(m->rl[e] - fmx);
+        for (int i = 0; i < k; i++) w[i] = expf(val[i] - fmx) / fden;
+    }
+}
+
+/* one expert's contribution: xb (normed) -> += weight * down(act(gate,up)) */
+static void expert_apply(Model *m, int layer, int e, const float *xb,
+                         float weight, float *x_out) {
+    Spec *s = &m->s;
+    m->usage[(size_t)layer * s->n_experts + e]++;
+    m->expert_loads++;
+    WT gate, up, down; const float *bg, *bu, *bd;
+    wt_expert(&m->experts, &m->exl, layer, e, 0, &gate, &bg);
+    wt_expert(&m->experts, &m->exl, layer, e, 1, &up, &bu);
+    wt_expert(&m->experts, &m->exl, layer, e, 2, &down, &bd);
+    wk_matvec(&gate, xb, m->hb);  wk_addbias(m->hb, bg, s->ffn);
+    wk_matvec(&up, xb, m->hb2);   wk_addbias(m->hb2, bu, s->ffn);
+    if (s->act_plain) {
+        for (int64_t j = 0; j < s->ffn; j++) {
+            float g = m->hb[j];
+            m->hb[j] = g / (1.0f + expf(-g)) * m->hb2[j];
+        }
+    } else {
+        for (int64_t j = 0; j < s->ffn; j++) {
+            float g = m->hb[j], u = m->hb2[j];
+            if (g > s->limit) g = s->limit;
+            if (u > s->limit) u = s->limit;
+            if (u < -s->limit) u = -s->limit;
+            float act = g / (1.0f + expf(-s->alpha * g));
+            m->hb[j] = act * (u + 1.0f);
+        }
+    }
+    wk_matvec(&down, m->hb, m->moe);
+    wk_addbias(m->moe, bd, s->hidden);
+    for (int64_t j = 0; j < s->hidden; j++)
+        x_out[j] += weight * m->moe[j];
+}
+
 static void moe(Model *m, int layer) {
     Spec *s = &m->s;
     wk_rmsnorm(m->x, m->mlp_norm[layer], m->xb, s->hidden, s->norm_eps);
@@ -487,6 +561,62 @@ static void forward(Model *m, int token, int want_logits) {
         wk_rmsnorm(m->x, m->final_norm, m->xb, s->hidden, s->norm_eps);
         wk_matvec(&m->lm_head, m->xb, m->logits);
     }
+}
+
+/* Batched prefill: layer-major over a chunk of tokens; MoE applied
+   expert-major so each routed expert's weights are touched once per
+   layer for the whole chunk (page-cache reuse turns O(tokens*top_k)
+   cold reads into O(unique experts)). Math is per-token identical to
+   forward(): attention runs sequentially inside each layer, so every
+   token sees exactly the KV state it would token-major.
+   MIDGE_NO_BATCH=1 falls back to the per-token path. */
+static void print_logits(Model *m);
+static void forward_batch(Model *m, const int *toks, int n, int tfall,
+                          int want_last) {
+    Spec *s = &m->s;
+    int h = s->hidden;
+    for (int t = 0; t < n; t++) {
+        if (m->pos + t >= m->ctx) { fprintf(stderr, "# context full (%d)\n", m->ctx); exit(4); }
+        if (toks[t] < 0 || toks[t] >= s->vocab) { fprintf(stderr, "# token %d out of range\n", toks[t]); exit(4); }
+        wk_row(&m->embed, toks[t], m->bx + (size_t)t * h);
+    }
+    for (int layer = 0; layer < s->n_layers; layer++) {
+        for (int t = 0; t < n; t++) {
+            memcpy(m->x, m->bx + (size_t)t * h, (size_t)h * 4);
+            attention(m, layer, m->pos + t);
+            memcpy(m->bx + (size_t)t * h, m->x, (size_t)h * 4);
+        }
+        for (int t = 0; t < n; t++)
+            route_topk(m, layer, m->bx + (size_t)t * h,
+                       m->bxb + (size_t)t * h,
+                       m->bsel + t * MAX_TOPK, m->bw + t * MAX_TOPK);
+        for (int e = 0; e < s->n_experts; e++) {
+            int touched = 0;
+            for (int t = 0; t < n; t++)
+                for (int i = 0; i < s->top_k; i++)
+                    if (m->bsel[t * MAX_TOPK + i] == e) {
+                        if (!touched) {
+                            uint8_t *base = m->experts.base
+                                + (size_t)layer * m->exl.layer_stride
+                                + (size_t)e * m->exl.expert_stride;
+                            madvise(base, m->exl.expert_stride, MADV_WILLNEED);
+                            touched = 1;
+                        }
+                        expert_apply(m, layer, e, m->bxb + (size_t)t * h,
+                                     m->bw[t * MAX_TOPK + i],
+                                     m->bx + (size_t)t * h);
+                    }
+        }
+    }
+    for (int t = 0; t < n; t++) {
+        int want = tfall || (want_last && t == n - 1);
+        if (want) {
+            wk_rmsnorm(m->bx + (size_t)t * h, m->final_norm, m->xb, h, s->norm_eps);
+            wk_matvec(&m->lm_head, m->xb, m->logits);
+        }
+        if (tfall) { m->pos++; print_logits(m); } 
+    }
+    if (!tfall) m->pos += n;
 }
 
 /* --------------------------------------------------------------- sampling */
@@ -625,20 +755,30 @@ int main(int argc, char **argv) {
             int tfall = !strncmp(line, "tfall:", 6);
             char *p = strchr(line, ':') + 1;
             double ts = now_s();
-            int count = 0;
+            int count = 0, cap0 = 64;
+            int *toks = malloc(cap0 * sizeof(int));
             while (*p) {
                 while (*p == ' ') p++;
                 if (!*p) break;
-                int tok = (int)strtol(p, &p, 10);
-                /* need logits at every position for tfall; last position for tf;
-                 * for ids: only the final token's logits matter */
-                int last = 1;
-                char *q = p; while (*q == ' ') q++;
-                if (*q) last = 0;
-                forward(&m, tok, tfall || last);
-                if (tfall) print_logits(&m);
-                count++; prompt_toks += 1;
+                if (count == cap0) toks = realloc(toks, (cap0 *= 2) * sizeof(int));
+                toks[count++] = (int)strtol(p, &p, 10);
             }
+            prompt_toks += count;
+            static int no_batch = -1;
+            if (no_batch < 0) no_batch = getenv("MIDGE_NO_BATCH") != NULL;
+            if (no_batch) {
+                for (int i = 0; i < count; i++) {
+                    forward(&m, toks[i], tfall || i == count - 1);
+                    if (tfall) print_logits(&m);
+                }
+            } else {
+                for (int off = 0; off < count; off += BATCH_MAX) {
+                    int nb = count - off < BATCH_MAX ? count - off : BATCH_MAX;
+                    forward_batch(&m, toks + off, nb, tfall,
+                                  off + nb == count);
+                }
+            }
+            free(toks);
             if (tf && !tfall) print_logits(&m);
             if (tf) { printf("DONE %d 0 %.3f %llu\n", count, now_s() - ts, (unsigned long long)m.expert_loads); fflush(stdout); continue; }
             fprintf(stderr, "# prefill %d toks in %.2fs (%.2f tok/s)\n", count, now_s() - ts,
