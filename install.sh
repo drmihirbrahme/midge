@@ -16,6 +16,11 @@ if ! command -v cc >/dev/null && ! command -v gcc >/dev/null; then
   esac
 fi
 
+if ! python3 -m pip --version >/dev/null 2>&1; then
+  fail "python3 has no pip module — install it first:
+           sudo apt install python3-pip     (Debian/Ubuntu)
+           python3 -m ensurepip --upgrade   (other systems)"
+fi
 say "installing Python dependencies"
 python3 -m pip install -r requirements.txt \
   || python3 -m pip install --break-system-packages -r requirements.txt \

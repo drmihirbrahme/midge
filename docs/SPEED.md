@@ -27,7 +27,7 @@ disk deciding how close you get to that when cold.
 ## Hybrid: cloud speed where you allow it, local where you need it
 
 ```bash
-midge serve models/gpt-oss-20b \
+./midge serve models/gpt-oss-20b \
   --upstream https://api.your-provider.com/v1 \
   --upstream-key $KEY --upstream-model gpt-oss-120b --route auto
 ```

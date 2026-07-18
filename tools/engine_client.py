@@ -29,6 +29,7 @@ class EngineProc:
             self._args += ["--stop", ",".join(map(str, stop_ids))]
         if preload_gb:
             self._args += ["--preload-gb", str(preload_gb)]
+        self.ctx = ctx
         self._start()
 
     def _start(self):
@@ -37,7 +38,7 @@ class EngineProc:
         if self._line() != "READY":
             raise EngineError("engine failed to start")
         self.pending = []          # sampled but never forwarded (stop token)
-        self.n_ctx = 0             # tokens the engine has forwarded
+        self.n_ctx = 0
 
     def _line(self):
         ln = self.p.stdout.readline()
@@ -51,6 +52,11 @@ class EngineProc:
         self._start()
 
     def prefill(self, ids):
+        need = self.n_ctx + len(ids) + 2
+        if need > self.ctx:
+            raise EngineError(
+                f"prompt needs {need} tokens but the context window is "
+                f"{self.ctx} — increase --ctx (and leave room to generate)")
         ids = self.pending + list(ids)
         self.pending = []
         if not ids:

@@ -432,4 +432,14 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        raise SystemExit(130)
+    except Exception as e:   # noqa: BLE001 — CLI boundary: no tracebacks
+        import sys
+        sys.stderr.write(f"[convert] failed: {e}\n")
+        if "hub" in type(e).__module__ or "Connection" in type(e).__name__:
+            sys.stderr.write("[convert] could not reach Hugging Face — check "
+                             "your connection; downloads resume when re-run.\n")
+        raise SystemExit(1)

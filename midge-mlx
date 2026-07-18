@@ -2,5 +2,16 @@
 import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import mlx.core  # noqa: F401
+    import numpy  # noqa: F401
+except ImportError as e:
+    sys.stderr.write(
+        f"midge-mlx: missing Python package ({e.name}).\n"
+        "  pip install -r requirements.txt   # numpy etc.\n"
+        "  pip install mlx                   # Apple Silicon\n"
+        "  pip install 'mlx[cuda]'           # NVIDIA GPU on Linux\n"
+        "  pip install 'mlx[cpu]'            # any Linux CPU\n")
+    sys.exit(2)
 from midge_mlx.cli import main
 main()

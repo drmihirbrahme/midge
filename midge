@@ -237,12 +237,16 @@ def main():
         from doctor import main as doctor_main
         return doctor_main(sys.argv[2:])
     args = ap.parse_args()
-    if args.cmd == "chat":
-        cmd_chat(args)
-    elif args.cmd == "run":
-        cmd_run(args)
-    elif args.cmd == "plan":
-        cmd_plan(args)
+    from engine_client import EngineError
+    try:
+        if args.cmd == "chat":
+            cmd_chat(args)
+        elif args.cmd == "run":
+            cmd_run(args)
+        elif args.cmd == "plan":
+            cmd_plan(args)
+    except EngineError as e:
+        die(str(e))
 
 
 if __name__ == "__main__":
