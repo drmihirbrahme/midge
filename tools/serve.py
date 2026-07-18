@@ -40,6 +40,7 @@ CLI (tools/harmony.py); engine access via tools/engine_client.py.
 from __future__ import annotations
 import argparse
 import json
+import urllib.request
 import os
 import sys
 import threading
@@ -198,16 +199,52 @@ class ChannelParser:
 
 
 # --------------------------------------------------------------- backend
+class _EngineThread:
+    """All MLX work runs on ONE dedicated thread that owns the model.
+    MLX default streams are thread-local (mlx >= 0.32 aborts the process
+    if arrays are evaluated on a thread without a stream), and
+    ThreadingHTTPServer dispatches every request on a fresh thread — so
+    the adapter marshals calls here instead."""
+
+    def __init__(self):
+        import queue
+        self.q = queue.Queue()
+        self.t = threading.Thread(target=self._loop, daemon=True)
+        self.t.start()
+
+    def _loop(self):
+        while True:
+            fn, box, done = self.q.get()
+            try:
+                box.append(fn())
+            except BaseException as e:   # noqa: BLE001 — marshalled to caller
+                box.append(e)
+            done.set()
+
+    def call(self, fn):
+        box, done = [], threading.Event()
+        self.q.put((fn, box, done))
+        done.wait()
+        if isinstance(box[0], BaseException):
+            raise box[0]
+        return box[0]
+
+
 class MlxAdapter:
     """Adapts midge_mlx.MidgeMLX to the EngineProc interface the
-    Session expects (prefill/generate/set_sampling/restart/n_ctx)."""
+    Session expects (prefill/generate/set_sampling/restart/n_ctx).
+    Every model call is executed on the dedicated engine thread."""
 
     def __init__(self, args):
         sys.path.insert(0, ROOT)
-        from midge_mlx.model import MidgeMLX
-        self.m = MidgeMLX(args.model_dir, ctx=args.ctx,
-                          dense_bits=args.dense_bits,
-                          cache_gb=args.cache_gb, device=args.device)
+        self.eng_thread = _EngineThread()
+
+        def _build():
+            from midge_mlx.model import MidgeMLX
+            return MidgeMLX(args.model_dir, ctx=args.ctx,
+                            dense_bits=args.dense_bits,
+                            cache_gb=args.cache_gb, device=args.device)
+        self.m = self.eng_thread.call(_build)
         print(f"[serve] mlx backend on {self.m.device}, kernels: "
               f"{self.m.caps}", file=sys.stderr)
         self.pending, self.n_ctx = [], 0
@@ -219,12 +256,18 @@ class MlxAdapter:
             self.seed = seed
 
     def prefill(self, ids):
-        for t in self.pending + list(ids):
-            self.m.forward(t)
-            self.n_ctx += 1
-        self.pending = []
+        def _run():
+            for t in self.pending + list(ids):
+                self.m.forward(t)
+                self.n_ctx += 1
+            self.pending = []
+        self.eng_thread.call(_run)
 
     def generate(self, ngen, stop_ids, on_token, chunk=0):
+        return self.eng_thread.call(
+            lambda: self._generate(ngen, stop_ids, on_token, chunk))
+
+    def _generate(self, ngen, stop_ids, on_token, chunk=0):
         stop_ids = set(stop_ids)
         self.seed += 1
         last = None
@@ -241,8 +284,10 @@ class MlxAdapter:
         return last
 
     def restart(self):
-        self.m.reset()
-        self.pending, self.n_ctx = [], 0
+        def _run():
+            self.m.reset()
+            self.pending, self.n_ctx = [], 0
+        self.eng_thread.call(_run)
 
 
 
@@ -409,6 +454,53 @@ class Handler(BaseHTTPRequestHandler):
     def _err(self, code, msg):
         self._json(code, {"error": {"message": msg, "type": "invalid_request_error"}})
 
+    def _decide_route(self, body):
+        want = body.pop("midge_route", None)
+        mode = want if want in ("local", "cloud", "auto") else self.S.args.route
+        if not self.S.args.upstream:
+            return "local"
+        return mode
+
+    def _relay_upstream(self, body, stream):
+        """Forward to the upstream OpenAI-compatible API; stream verbatim."""
+        a = self.S.args
+        fwd = {k: v for k, v in body.items() if k != "midge_route"}
+        if a.upstream_model:
+            fwd["model"] = a.upstream_model
+        hdrs = {"Content-Type": "application/json"}
+        if a.upstream_key:
+            hdrs["Authorization"] = "Bearer " + a.upstream_key
+        req = urllib.request.Request(
+            a.upstream.rstrip("/") + "/chat/completions",
+            data=json.dumps(fwd).encode(), headers=hdrs)
+        resp = urllib.request.urlopen(req, timeout=300)
+        if stream:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("X-Midge-Route", "cloud")
+            self.end_headers()
+            self.close_connection = True
+            while True:
+                chunk = resp.read(8192)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        else:
+            data = json.loads(resp.read())
+            data["midge_served_by"] = "cloud:" + str(data.get("model", "?"))
+            payload = json.dumps(data).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("X-Midge-Route", "cloud")
+            self.end_headers()
+            self.wfile.write(payload)
+
     def _sse_start(self):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -469,11 +561,28 @@ class Handler(BaseHTTPRequestHandler):
         msgs = body.get("messages")
         if not isinstance(msgs, list) or not msgs:
             return self._err(400, "messages: non-empty list required")
-        msgs = [{"role": m.get("role", "user"),
-                 "content": _content_str(m.get("content", ""))} for m in msgs]
+        def _norm(m):
+            out = {"role": m.get("role", "user"),
+                   "content": _content_str(m.get("content", ""))}
+            if m.get("tool_calls"):
+                out["tool_calls"] = m["tool_calls"]
+            if m.get("tool_call_id"):
+                out["tool_call_id"] = m["tool_call_id"]
+            return out
+        msgs = [_norm(m) for m in msgs]
         if msgs[0]["role"] != "system":
             msgs = [{"role": "system",
                      "content": self.S.args.system}] + msgs
+        route = self._decide_route(body)
+        if route in ("cloud", "auto"):
+            try:
+                return self._relay_upstream(body, bool(body.get("stream")))
+            except (BrokenPipeError, ConnectionResetError):
+                raise
+            except Exception as e:
+                if route == "cloud":
+                    return self._err(502, f"upstream failed: {e}")
+                # auto: transparent local fallback
         tools = body.get("tools") or []
         if tools:
             sysmsg = msgs[0]
@@ -579,6 +688,7 @@ class Handler(BaseHTTPRequestHandler):
             message["reasoning_content"] = reasoning
         self._json(200, {"id": rid, "object": "chat.completion",
                          "created": now(), "model": self.S.model_name,
+                         "midge_served_by": "local",
                          "choices": [{"index": 0, "message": message,
                                       "finish_reason": fin}],
                          "usage": usage})
@@ -639,10 +749,27 @@ def main(argv=None):
     ap.add_argument("--chunk", type=int, default=8,
                     help="generation chunk size (stop strings are checked "
                          "between chunks)")
+    ap.add_argument("--upstream", default=None, metavar="URL",
+                    help="OpenAI-compatible base URL (e.g. https://api.openai.com/v1) "
+                         "for hybrid routing: cloud speed when permitted, "
+                         "local fallback always")
+    ap.add_argument("--upstream-key", default=os.environ.get("MIDGE_UPSTREAM_KEY"),
+                    help="API key for --upstream (or env MIDGE_UPSTREAM_KEY)")
+    ap.add_argument("--upstream-model", default=None,
+                    help="model name to request upstream")
+    ap.add_argument("--route", default=None, choices=["local", "cloud", "auto"],
+                    help="local = never leave this machine; cloud = always relay "
+                         "(502 if upstream fails); auto = relay with transparent "
+                         "local fallback. Default: auto if --upstream is set, "
+                         "else local. Per-request override: \"midge_route\"")
     ap.add_argument("--system", default="You are a helpful assistant.\n"
                     "Reasoning: low",
                     help="system prompt used when the client sends none")
     args = ap.parse_args(argv)
+    if args.route is None:
+        args.route = "auto" if args.upstream else "local"
+    if args.route in ("cloud", "auto") and not args.upstream:
+        ap.error(f"--route {args.route} requires --upstream")
 
     Handler.S = Session(args)
     srv = ThreadingHTTPServer((args.host, args.port), Handler)

@@ -35,12 +35,74 @@ def sh(args):
         raise SystemExit("command failed: " + " ".join(map(str, args)))
 
 
+def wait_health(port, timeout=90):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=1)
+            return
+        except Exception:
+            time.sleep(0.3)
+    raise SystemExit(f"server on {port} did not come up")
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
     p = s.getsockname()[1]
     s.close()
     return p
+
+
+
+def relay_tests(model_dir, opts):
+    up_port, hy_port = free_port(), free_port()
+    upstream = subprocess.Popen(
+        [sys.executable, os.path.join(ROOT, "tools/serve.py"), model_dir,
+         "--port", str(up_port), "--ctx", "640", "--backend", opts.backend],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    hybrid = subprocess.Popen(
+        [sys.executable, os.path.join(ROOT, "tools/serve.py"), model_dir,
+         "--port", str(hy_port), "--ctx", "640", "--backend", opts.backend,
+         "--upstream", f"http://127.0.0.1:{up_port}/v1", "--route", "auto"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for p in (up_port, hy_port):
+            wait_health(p)
+        hb = f"http://127.0.0.1:{hy_port}/v1/chat/completions"
+        basemsg = {"model": "m", "max_tokens": 6, "temperature": 0,
+                   "messages": [{"role": "system", "content": "s"},
+                                {"role": "user", "content": "hi"}]}
+
+        def post(extra):
+            rq = urllib.request.Request(hb,
+                data=json.dumps({**basemsg, **extra}).encode(),
+                headers={"Content-Type": "application/json"})
+            r = urllib.request.urlopen(rq, timeout=120)
+            return r.headers, r.read()
+
+        h, raw = post({})                      # auto -> relayed to "cloud"
+        d = json.loads(raw)
+        assert d["midge_served_by"].startswith("cloud:"), d.get("midge_served_by")
+        assert h["X-Midge-Route"] == "cloud"
+
+        h, raw = post({"midge_route": "local"})  # per-request local override
+        assert json.loads(raw)["midge_served_by"] == "local"
+
+        h, raw = post({"stream": True})        # streamed relay passthrough
+        assert h["X-Midge-Route"] == "cloud"
+        assert b"data:" in raw and b"[DONE]" in raw
+
+        upstream.terminate()
+        upstream.wait(timeout=10)
+        h, raw = post({})                      # upstream dead -> local fallback
+        assert json.loads(raw)["midge_served_by"] == "local"
+        print("[validate_server] hybrid relay: cloud/override/stream/fallback OK")
+    finally:
+        for p in (upstream, hybrid):
+            if p.poll() is None:
+                p.terminate()
+                p.wait(timeout=10)
 
 
 def main():
@@ -204,6 +266,10 @@ def main():
             {"role": "assistant", "content": None, "tool_calls": [call]},
             {"role": "tool", "tool_call_id": "call_abc", "content": "22C"},
         ]
+        rendered = tok.decode(srv_mod.render_messages(h, replay),
+                              skip_special_tokens=False)
+        assert "to=functions.get_weather" in rendered and "<|call|>" in rendered
+        assert "functions.get_weather to=assistant" in rendered
         r_replay = c.chat.completions.create(model=m, max_tokens=4,
             temperature=0, messages=replay, tools=WEATHER)
         assert r_replay.usage.prompt_tokens > r_tools.usage.prompt_tokens + 10
@@ -217,6 +283,7 @@ def main():
         d = json.load(urllib.request.urlopen(req, timeout=60))
         assert d["object"] == "text_completion"
         print("[validate_server] /v1/completions                     OK")
+        relay_tests(model_dir, opts)
         print("[validate_server] all server tests passed")
     finally:
         srv.terminate()

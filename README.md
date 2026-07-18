@@ -65,7 +65,18 @@ one core, compute-side, and several× that on desktop core counts, where
 the real ceiling becomes cache hit rate and disk. Cold decoding is
 IO-bound: ≈ `disk_MB/s ÷ 1900` tok/s for 120b, so NVMe and
 `--preload-gb` matter. `./midge check` measures *your* kernel, disk and
-RAM and prints estimates for your machine.
+RAM and prints estimates for your machine. Cold decoding issues
+advisory prefetch for routed experts so disk readahead can overlap
+compute (a large effect pre-SIMD, neutral on a single fast core —
+see docs/SPEED.md for the honest numbers).
+
+**Hybrid mode**: point `midge serve` at any OpenAI-compatible upstream
+(`--upstream URL --route auto`) and permitted requests run at literal
+cloud speed while everything falls back to the local model the moment
+the upstream is down — per-request `"midge_route": "local"` keeps
+sensitive calls on-device, and every response is tagged with who served
+it. Details, measurements, and the speed roadmap (batched prefill,
+speculative decoding, LAN expert swarm): [docs/SPEED.md](docs/SPEED.md).
 
 Honest framing: this is a read-the-weights-every-token design. It will
 not race a datacenter GPU serving the same model — its job is running

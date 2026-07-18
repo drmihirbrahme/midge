@@ -408,6 +408,21 @@ static void moe(Model *m, int layer) {
             val[j] = v; sel[j] = e;
         }
     }
+    /* async prefetch: tell the kernel about ALL selected experts before
+       computing the first, so disk readahead overlaps compute instead of
+       page faults serializing with it. Advisory + idempotent when warm.
+       MIDGE_NO_PREFETCH=1 disables (for A/B measurement). */
+    static int no_prefetch = -1;
+    if (no_prefetch < 0) no_prefetch = getenv("MIDGE_NO_PREFETCH") != NULL;
+    if (!no_prefetch) {
+        for (int i = 0; i < k; i++) {
+            uint8_t *base = m->experts.base
+                + (size_t)layer * m->exl.layer_stride
+                + (size_t)sel[i] * m->exl.expert_stride;
+            madvise(base, m->exl.expert_stride, MADV_WILLNEED);
+        }
+    }
+
     float mx = val[0], den = 0.f, w[MAX_TOPK];
     if (s->router_norm) {          /* softmax over the selected logits */
         for (int i = 0; i < k; i++) { w[i] = expf(val[i] - mx); den += w[i]; }
