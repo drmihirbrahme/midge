@@ -161,4 +161,11 @@ static void wt_expert(WFile *f, const WExLayout *L, int layer, int expert, int m
     *bias_out = (const float *)(e + L->off[m][2]);
 }
 
+static void wf_close(WFile *f) {
+    if (f->hdr) { wj_free(f->hdr); f->hdr = NULL; }
+    if (f->map && f->map != MAP_FAILED) { munmap(f->map, f->size); f->map = NULL; }
+    if (f->fd >= 0) { close(f->fd); f->fd = -1; }
+}
+
 #endif /* WTEN_H */
+

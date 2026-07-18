@@ -1,5 +1,5 @@
 /* mjson.h — minimal JSON parser (subset sufficient for midge headers/specs).
- * Arena-free: nodes are malloc'd and never freed (engine lifetime data).
+ * Nodes are malloc'd; wj_free() releases a tree at shutdown.
  * Supports: objects, arrays, strings (with \" \\ \/ \b \f \n \r \t \uXXXX->'?'),
  * numbers (strtod), true/false/null.
  */
@@ -134,6 +134,18 @@ static double wj_numd(WJ *o, const char *key, double dflt) {
 static const char *wj_strd(WJ *o, const char *key, const char *dflt) {
     WJ *v = wj_get(o, key);
     return (v && v->type == 's') ? v->str : dflt;
+}
+
+static void wj_free(WJ *n) {
+    if (!n) return;
+    for (int i = 0; i < n->n; i++) {
+        if (n->keys) free(n->keys[i]);
+        wj_free(n->items[i]);
+    }
+    free(n->keys);
+    free(n->items);
+    free(n->str);
+    free(n);
 }
 
 #endif /* WJSON_H */

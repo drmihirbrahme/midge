@@ -619,6 +619,23 @@ static void forward_batch(Model *m, const int *toks, int n, int tfall,
     if (!tfall) m->pos += n;
 }
 
+static void model_free(Model *m) {
+    Spec *s = &m->s;
+    for (int i = 0; i < s->n_layers; i++) { free(m->kc[i]); free(m->vc[i]); }
+    free(m->kc); free(m->vc);
+    free(m->wq); free(m->wk); free(m->wv); free(m->wo); free(m->router_w);
+    free(m->bq); free(m->bk); free(m->bv); free(m->bo); free(m->router_b);
+    free(m->qn); free(m->kn);
+    free(m->attn_norm); free(m->mlp_norm); free(m->sink);
+    free(m->bx); free(m->bxb); free(m->bw); free(m->bsel);
+    free(m->x); free(m->xb); free(m->q); free(m->k); free(m->v);
+    free(m->ao); free(m->att); free(m->hb); free(m->hb2); free(m->moe);
+    free(m->rl); free(m->logits); free(m->probs); free(m->usage);
+    free(m->rope_cos); free(m->rope_sin);
+    free(s->layer_sliding);
+    wf_close(&m->dense); wf_close(&m->experts);
+}
+
 /* --------------------------------------------------------------- sampling */
 static uint64_t rng_state = 0x853c49e6748fea9bULL;
 static uint32_t rng_u32(void) {
@@ -814,5 +831,7 @@ int main(int argc, char **argv) {
         }
     }
     usage_save(&m);
+    free(line);
+    model_free(&m);
     return 0;
 }
