@@ -26,8 +26,14 @@ It also does more than run models locally:
   upstream you choose — a cloud API, or your own GPU box on the LAN — at
   that upstream's speed, and transparently fall back to the local model
   when it's unavailable, with per-request privacy pinning;
-* a **web onboarding UI** (`./midge ui`) that downloads, converts, builds,
-  and opens a chat panel with zero terminal steps.
+* a **web onboarding UI** (`./midge ui`) that searches Hugging Face,
+  downloads, converts, builds, and opens a chat panel with zero terminal
+  steps.
+
+Double-click installers (.dmg / .zip / .tar.gz) are attached to each
+[release](https://github.com/drmihirbrahme/midge/releases); see
+[docs/INSTALL.md](docs/INSTALL.md). Or clone and `./install.sh` on any
+platform.
 
 midge began from [colibri](https://github.com/JustVugg/colibri), which
 proved disk-streamed experts on GLM; it has since grown into its own

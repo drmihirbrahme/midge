@@ -41,7 +41,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import midgepack as mp  # noqa: E402
 
-MODELS_DIR = os.path.join(ROOT, "models")
+MODELS_DIR = mp.models_dir()
 
 
 # ------------------------------------------------------------ catalog
@@ -136,7 +136,7 @@ class Job:
     def _build(self):
         st = self.steps[1]
         st["status"] = "running"
-        exe = os.path.join(ROOT, "midged")
+        exe = mp.engine_path()
         if os.path.exists(exe):
             self._emit("engine already built — skipping")
         else:
@@ -175,7 +175,7 @@ class State:
     def snapshot(self):
         free = shutil.disk_usage(ROOT).free
         return {
-            "engine_built": os.path.exists(os.path.join(ROOT, "midged")),
+            "engine_built": os.path.exists(mp.engine_path()),
             "free_disk_gb": round(free / (1 << 30), 1),
             "catalog": load_catalog(),
             "models": local_models(),
@@ -285,6 +285,11 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return self._json(400, {"error": "bad JSON"})
         try:
+            if self.path == "/api/search":
+                import discover
+                rows = discover.search(body.get("query"), body.get("family"),
+                                       int(body.get("limit") or 24))
+                return self._json(200, {"results": rows})
             if self.path == "/api/check":
                 import doctor
                 rep = doctor.analyze(body.get("source", ""),

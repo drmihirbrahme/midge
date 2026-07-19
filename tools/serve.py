@@ -52,6 +52,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harmony import Harmony
 from engine_client import EngineProc, EngineError
+import midgepack as mp
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -305,7 +306,7 @@ class Session:
         if args.backend == "mlx":
             self.eng = MlxAdapter(args)
         else:
-            self.eng = EngineProc(os.path.join(ROOT, "midged"), args.model_dir,
+            self.eng = EngineProc(mp.engine_path(), args.model_dir,
                                   args.ctx, 1.0, 1.0, args.seed,
                                   self.h.stop_ids, args.preload_gb)
         self.msgs = []             # messages currently in the engine context

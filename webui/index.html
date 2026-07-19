@@ -108,6 +108,14 @@ a{color:var(--amber2)}
       <div class="hint">midge fetches only config.json to judge the
         architecture, then measures this device (engine kernel, disk, RAM)
         before any download starts.</div>
+      <div style="margin-top:14px">
+        <div class="chatbar" style="margin-top:0">
+          <input id="searchin" placeholder="search Hugging Face (e.g. mixtral, qwen3 moe)"
+                 autocomplete="off">
+          <button id="searchbtn" class="ghost">Search</button>
+        </div>
+        <div id="searchout"></div>
+      </div>
     </div>
   </section>
 
@@ -278,6 +286,27 @@ $("start").onclick = async () => {
 $("retry").onclick = async () => {
   await api("/api/setup", {model: state.job.model});
   $("retry").classList.add("hidden"); pollJob();
+};
+$("searchbtn").onclick = async () => {
+  const q = $("searchin").value.trim();
+  $("searchbtn").disabled = true;
+  $("searchout").innerHTML = '<div class="hint">searching…</div>';
+  try{
+    const r = await api("/api/search", {query: q, limit: 16});
+    const mark = {likely: "✓", unknown: "?", no: "✗"};
+    $("searchout").innerHTML = r.results.map(m => `
+      <div class="card" style="cursor:${m.verdict==='no'?'default':'pointer'};
+           opacity:${m.verdict==='no'?0.55:1}" data-id="${m.id}"
+           data-ok="${m.verdict!=='no'}">
+        <div class="mrow"><span class="mname" style="font-size:14px">${mark[m.verdict]} ${m.id}</span>
+          <span class="mmeta">${m.downloads.toLocaleString()} downloads</span></div>
+        ${m.reason ? `<div class="mmeta warn">${m.reason}</div>` : ""}
+      </div>`).join("") || '<div class="hint">no results</div>';
+    $("searchout").querySelectorAll("[data-ok=true]").forEach(el =>
+      el.onclick = () => { $("repoin").value = el.dataset.id;
+        $("checkbtn").click(); $("repoin").scrollIntoView({behavior:"smooth"}); });
+  } catch(e){ $("searchout").innerHTML = '<div class="hint warn">'+e.message+'</div>'; }
+  $("searchbtn").disabled = false;
 };
 $("checkbtn").onclick = async () => {
   const src = $("repoin").value.trim();
