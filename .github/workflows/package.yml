@@ -1,0 +1,74 @@
+name: package
+
+# Builds double-click installers on real OS runners (PyInstaller cannot
+# cross-compile, so each OS builds its own). Triggered on version tags and
+# manually. Artifacts: a macOS .dmg, a Windows .zip (+ .exe launcher), and
+# a Linux tarball. Signing/notarization are left as documented manual
+# steps because they need paid certificates and secrets.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: install deps
+        run: |
+          pip install -r requirements.txt pyinstaller
+      - name: build engine (single-threaded; Apple clang lacks OpenMP)
+        run: make
+      - name: freeze app
+        run: pyinstaller packaging/midge.spec --noconfirm
+      - name: stage prebuilt engine into the bundle
+        run: cp midged "dist/midge/midged"
+      - name: make .dmg
+        run: |
+          mkdir -p dist/dmg && cp -R dist/midge dist/dmg/midge
+          ln -s /Applications dist/dmg/Applications || true
+          hdiutil create -volname midge -srcfolder dist/dmg \
+            -ov -format UDZO dist/midge-macos.dmg
+      - uses: actions/upload-artifact@v4
+        with: { name: midge-macos-dmg, path: dist/midge-macos.dmg }
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: install deps
+        run: pip install -r requirements.txt pyinstaller
+      # NOTE: the C engine is POSIX-only (mmap/madvise). On native Windows
+      # midge runs via the MLX backend or WSL; the packaged app ships
+      # without a prebuilt midged and the launcher guides the user.
+      - name: freeze app
+        run: pyinstaller packaging/midge.spec --noconfirm
+      - name: zip
+        run: Compress-Archive -Path dist/midge/* -DestinationPath dist/midge-windows.zip
+      - uses: actions/upload-artifact@v4
+        with: { name: midge-windows-zip, path: dist/midge-windows.zip }
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - name: install deps
+        run: pip install -r requirements.txt pyinstaller
+      - name: build engine
+        run: make
+      - name: freeze app
+        run: pyinstaller packaging/midge.spec --noconfirm
+      - name: stage prebuilt engine
+        run: cp midged dist/midge/midged
+      - name: tarball
+        run: tar -C dist -czf dist/midge-linux.tar.gz midge
+      - uses: actions/upload-artifact@v4
+        with: { name: midge-linux-tar, path: dist/midge-linux.tar.gz }

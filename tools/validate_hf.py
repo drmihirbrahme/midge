@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import sys
 
 import numpy as np
 
@@ -58,11 +59,18 @@ def main():
     del model
 
     # engine
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import midgepack as _mp
     p = subprocess.Popen(
-        [os.path.join(ROOT, "midged"), args.model_dir, "--ctx", str(args.ctx),
+        [_mp.engine_path(), args.model_dir, "--ctx", str(args.ctx),
          "--temp", "0", "--no-stats"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
-    assert p.stdout.readline().strip() == "READY"
+    while True:                       # skip LOADING / # progress lines
+        ln = p.stdout.readline().strip()
+        if ln == "READY":
+            break
+        if ln != "LOADING" and not ln.startswith("#"):
+            raise SystemExit("unexpected engine startup line: " + ln)
     p.stdin.write("tf: " + " ".join(map(str, id_list)) + "\n")
     p.stdin.flush()
     ln = p.stdout.readline()
@@ -105,7 +113,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         raise SystemExit(130)
     except Exception as e:   # noqa: BLE001 — CLI boundary: no tracebacks
-        import sys
         sys.stderr.write(f"[validate_hf] failed: {e}\n")
         if "hub" in type(e).__module__ or "Connection" in type(e).__name__:
             sys.stderr.write("[validate_hf] could not reach Hugging Face — check "

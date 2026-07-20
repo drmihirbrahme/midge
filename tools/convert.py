@@ -368,8 +368,8 @@ class Source:
 
 
 # --------------------------------------------------------------- main
-def main():
-    ap = argparse.ArgumentParser(description=__doc__,
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="midge convert", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("source", help="local checkpoint dir or HF repo id")
     ap.add_argument("outdir", help="output model directory")
@@ -384,7 +384,7 @@ def main():
     ap.add_argument("--no-transpose-experts", action="store_true",
                     help="expert weights are already [out, in] "
                          "(HF bf16 checkpoints store [in, out])")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     os.makedirs(args.outdir, exist_ok=True)
     src = Source(args.source, args.outdir, purge=(False if args.keep_shards else None))

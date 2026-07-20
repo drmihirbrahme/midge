@@ -60,7 +60,12 @@ class Engine:
         self.p = subprocess.Popen(
             [MIDGED, model_dir, "--ctx", str(CTX), "--temp", "0", "--no-stats"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1)
-        assert self._line() == "READY"
+        while True:                       # skip LOADING / # progress lines
+            ln = self._line()
+            if ln == "READY":
+                break
+            if ln != "LOADING" and not ln.startswith("#"):
+                raise SystemExit("unexpected engine startup line: " + ln)
 
     def _line(self):
         ln = self.p.stdout.readline()

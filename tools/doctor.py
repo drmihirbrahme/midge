@@ -74,8 +74,7 @@ def bench_cpu_gbps(seconds=0.6) -> tuple[float, bool]:
     """Quantized-weight throughput of the decode hot loop. Uses the real
     engine kernel (midged --bench) when built; else a rough numpy-based
     estimate (flagged)."""
-    exe = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                       "midged")
+    exe = mp.engine_path()
     if os.path.exists(exe):
         import subprocess
         out = subprocess.run([exe, "--bench"], capture_output=True, text=True,

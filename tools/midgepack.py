@@ -14,6 +14,35 @@ import mmap
 import os
 import struct
 import numpy as np
+import os as _os
+
+
+def midge_home():
+    """Writable base dir for built engine + models (packaged app friendly)."""
+    h = _os.environ.get("MIDGE_HOME")
+    if h:
+        _os.makedirs(h, exist_ok=True)
+        return h
+    return _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+
+
+def engine_path():
+    """Path to the midged binary: explicit env, else repo/home root."""
+    e = _os.environ.get("MIDGE_ENGINE")
+    if e:
+        return e
+    exe = "midged.exe" if _os.name == "nt" else "midged"
+    for base in (midge_home(),
+                 _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))):
+        p = _os.path.join(base, exe)
+        if _os.path.exists(p):
+            return p
+    return _os.path.join(midge_home(), exe)
+
+
+def models_dir():
+    d = _os.environ.get("MIDGE_MODELS_DIR") or _os.path.join(midge_home(), "models")
+    return d
 
 ALIGN = 64
 FP4_LUT = np.array(

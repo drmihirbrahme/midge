@@ -204,10 +204,12 @@ static void need_mat(WFile *f, const char *name, WT *t) {
 static void model_load(Model *m, const char *dir, int ctx) {
     snprintf(m->dir, sizeof(m->dir), "%s", dir);
     char p[1200];
+    fprintf(stderr, "# loading %s\n", dir); fflush(stderr);
     snprintf(p, sizeof(p), "%s/dense.midge", dir);
     if (wf_open(&m->dense, p) != 0) { fprintf(stderr, "# cannot open %s: %s\n", p, strerror(errno)); exit(2); }
     snprintf(p, sizeof(p), "%s/experts.midge", dir);
     if (wf_open(&m->experts, p) != 0) { fprintf(stderr, "# cannot open %s: %s\n", p, strerror(errno)); exit(2); }
+    fprintf(stderr, "# mapped experts (%.1f GB)\n", m->experts.size / 1e9); fflush(stderr);
     madvise(m->experts.map, m->experts.size, MADV_RANDOM);
 
     WJ *spec = wj_get(m->dense.hdr, "spec");
@@ -745,6 +747,8 @@ int main(int argc, char **argv) {
 
     Model m; memset(&m, 0, sizeof(m));
     double t0 = now_s();
+    setvbuf(stdout, NULL, _IOLBF, 0);      /* line-buffered protocol */
+    printf("LOADING\n"); fflush(stdout);   /* alive before the slow part */
     model_load(&m, dir, ctx);
     preload_hot(&m, preload_gb);
     fprintf(stderr, "# midge ready in %.1fs · layers=%d experts=%d topk=%d hidden=%lld vocab=%lld ctx=%d expert_dt=%s\n",
