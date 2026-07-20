@@ -211,13 +211,14 @@ def main():
 
         msgs = [{"role": "system", "content": "s"},
                 {"role": "user", "content": "a"}]
-        for attempt in range(8):
-            r = c.chat.completions.create(model=m, max_tokens=150,
+        r = None
+        for attempt in range(40):     # tiny random model: a stop token
+            r = c.chat.completions.create(model=m, max_tokens=24,
                                           temperature=1.0, seed=attempt,
-                                          messages=msgs)
-            if r.choices[0].finish_reason == "stop":
+                                          messages=msgs)   # arrives quickly at
+            if r.choices[0].finish_reason == "stop":       # low token counts
                 break
-        assert r.choices[0].finish_reason == "stop", "no natural stop in 8 tries"
+        assert r.choices[0].finish_reason == "stop", "no natural stop in 40 tries"
         p1 = r.usage.prompt_tokens
         msgs2 = msgs + [{"role": "assistant",
                          "content": r.choices[0].message.content},
