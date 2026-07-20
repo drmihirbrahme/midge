@@ -361,6 +361,13 @@ router top-k, activation clamps. If your model fits the MoE-transformer
 family, you need a spec plus a tensor-name mapping in `tools/convert.py` —
 no C changes. Details in [docs/ADDING_MODELS.md](docs/ADDING_MODELS.md).
 
+## Support
+
+Trouble building or loading a model? See [SUPPORT.md](SUPPORT.md) — it
+covers the load sequence to expect (and how to tell midge apart from
+other tools), plus triage steps. Bugs go to Issues, questions and
+real-weight reports to Discussions.
+
 ## Author
 
 Dr Mihir Brahme — drmihir@duck.com. Issues and PRs welcome; see
