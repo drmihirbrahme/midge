@@ -37,6 +37,10 @@ class EngineProc:
     def _start(self):
         self.p = subprocess.Popen(self._args, stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, text=True, bufsize=1)
+        # fresh reader state for this process (restart() reuses _start)
+        for attr in ("_rq", "_reader"):
+            if hasattr(self, attr):
+                delattr(self, attr)
         # Wait for READY, but never block forever. The engine prints
         # LOADING immediately, then READY once mapped. A large model can
         # take a while, so we allow generous time but fail cleanly if the
@@ -67,17 +71,40 @@ class EngineProc:
 
     def _readline_timeout(self, timeout):
         """Read one line from the engine, or None if nothing arrived in
-        `timeout` seconds. Uses select so a hung engine can't block us."""
-        import select
-        r, _, _ = select.select([self.p.stdout], [], [], timeout)
-        if not r:
+        `timeout` seconds. A single background thread drains stdout into a
+        queue (started lazily), so we never select() on buffered text IO
+        and never race multiple readers on the same stream."""
+        import queue
+        if not hasattr(self, "_rq"):
+            self._rq = queue.Queue()
+
+            def _pump():
+                try:
+                    for line in self.p.stdout:      # blocks in one thread only
+                        self._rq.put(line)
+                except Exception:                    # noqa: BLE001
+                    pass
+                self._rq.put(None)                   # EOF sentinel
+
+            import threading
+            self._reader = threading.Thread(target=_pump, daemon=True)
+            self._reader.start()
+        try:
+            ln = self._rq.get(timeout=timeout)
+        except queue.Empty:
             return None
-        ln = self.p.stdout.readline()
-        if not ln:
+        if ln is None:
             raise EngineError("engine closed its output during load")
         return ln.rstrip("\n")
 
     def _line(self):
+        # Once the background reader exists, all reads must come from the
+        # queue (never the raw stream) to avoid two threads racing stdout.
+        if hasattr(self, "_rq"):
+            ln = self._rq.get()
+            if ln is None:
+                raise EngineError("engine exited unexpectedly")
+            return ln.rstrip("\n")
         ln = self.p.stdout.readline()
         if not ln:
             raise EngineError("engine exited unexpectedly")

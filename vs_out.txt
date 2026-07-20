@@ -1,0 +1,1 @@
+[validate_server] /v1/models + /v1/models/{model}       OK

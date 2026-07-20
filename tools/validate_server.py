@@ -211,23 +211,16 @@ def main():
 
         msgs = [{"role": "system", "content": "s"},
                 {"role": "user", "content": "a"}]
-        # Only a cleanly *stopped* assistant turn leaves a reusable prefix
-        # (a length-capped turn is discarded by design), so we need a
-        # natural stop here. main used 150 tokens x 8 tries reliably; keep
-        # a generous budget and many attempts so this can't flake on fast
-        # runners where a short draw rarely emits the stop token.
-        r = None
-        for attempt in range(24):
-            r = c.chat.completions.create(model=m, max_tokens=200,
+        for attempt in range(8):
+            r = c.chat.completions.create(model=m, max_tokens=150,
                                           temperature=1.0, seed=attempt,
                                           messages=msgs)
             if r.choices[0].finish_reason == "stop":
                 break
-        assert r.choices[0].finish_reason == "stop", \
-            "no natural stop in 24 tries (tiny model won't emit its stop token)"
+        assert r.choices[0].finish_reason == "stop", "no natural stop in 8 tries"
         p1 = r.usage.prompt_tokens
         msgs2 = msgs + [{"role": "assistant",
-                         "content": r.choices[0].message.content or ""},
+                         "content": r.choices[0].message.content},
                         {"role": "user", "content": "b"}]
         r2 = c.chat.completions.create(model=m, max_tokens=8, temperature=0,
                                        messages=msgs2)
