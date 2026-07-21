@@ -185,6 +185,29 @@ def main():
         assert rc in (0, 1)   # clean return, never an uncaught exception
         print("[validate_ui] discover kwarg-compat + graceful failure    OK")
 
+        # bare-Python safety: `midge --help` and the dependency guards must
+        # work without heavy deps (numpy etc.) importable — a regression
+        # here dumped tracebacks at users on a fresh machine. Run the
+        # launcher in a subprocess whose sys.path CANNOT see numpy, and
+        # confirm --help succeeds with no traceback.
+        import subprocess as _sp
+        env = dict(os.environ)
+        # a site-less interpreter: -S skips site-packages, so numpy (only
+        # in site-packages) is invisible, mimicking a bare install.
+        r_help = _sp.run([sys.executable, "-S", os.path.join(ROOT, "midge"),
+                          "--help"], capture_output=True, text=True, env=env)
+        combined = r_help.stdout + r_help.stderr
+        assert "Traceback" not in combined, \
+            "midge --help imported a missing dep at load:\n" + combined
+        assert "usage: midge" in combined, combined
+        r_guard = _sp.run([sys.executable, "-S", os.path.join(ROOT, "midge"),
+                           "convert", "a", "b"], capture_output=True, text=True)
+        gc = r_guard.stdout + r_guard.stderr
+        # either a clean 'missing package' guard message, or (if -S still
+        # found numpy) a normal arg/path error — but never a raw traceback
+        assert "Traceback" not in gc, "guard path raised a traceback:\n" + gc
+        print("[validate_ui] bare-Python --help + guards (no traceback)   OK")
+
         print("[validate_ui] all interface tests passed")
     finally:
         ui.terminate()

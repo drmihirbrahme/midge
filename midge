@@ -63,13 +63,13 @@ def load_spec(model_dir):
 
 # --------------------------------------------------------------- engine
 from engine_client import EngineProc, EngineError  # noqa: E402
-import midgepack as _mp  # noqa: E402
 
 
 class Engine(EngineProc):
     """CLI-flavoured wrapper: die() on errors, ROOT-relative binary."""
 
     def __init__(self, model_dir, ctx, temp, topp, seed, stop_ids, preload_gb):
+        import midgepack as _mp   # lazy: keep numpy off the --help / guard path
         try:
             super().__init__(_mp.engine_path(), model_dir, ctx,
                              temp, topp, seed, stop_ids, preload_gb)
