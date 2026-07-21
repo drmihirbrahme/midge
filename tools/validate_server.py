@@ -144,7 +144,11 @@ def main():
     try:
         from openai import OpenAI
     except ImportError:
-        raise SystemExit("pip install openai")
+        # 'openai' is only needed to exercise this test suite, not to run
+        # midge. Skip cleanly rather than erroring.
+        print("[validate_server] SKIPPED — the 'openai' client is not "
+              "installed (only needed for this test). Install: pip install openai")
+        raise SystemExit(0)
 
     model_dir = os.path.join(TMP, "srv-model")
     if not os.path.exists(os.path.join(model_dir, "dense.midge")):

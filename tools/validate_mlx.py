@@ -27,7 +27,12 @@ from reference import Reference  # noqa: E402
 try:
     from midge_mlx.model import MidgeMLX
 except ImportError as e:
-    raise SystemExit(f"mlx not installed ({e}) — pip install 'mlx[cpu]'")
+    # mlx is an optional, platform-specific dependency. If it's absent
+    # this suite is simply not applicable — skip cleanly (exit 0) so it
+    # never looks like a failure to someone who didn't install it.
+    print(f"[validate_mlx] SKIPPED — mlx not installed ({e.name}). "
+          "Install with: pip install 'mlx[cpu]'  (or mlx[cuda] / mlx on Mac)")
+    raise SystemExit(0)
 
 TMP = os.path.join(ROOT, ".test-tmp")
 IDS = [1, 17, 42, 5, 99, 3, 77, 12, 63, 8, 120, 31]

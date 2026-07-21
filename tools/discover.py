@@ -35,14 +35,18 @@ def search(query=None, family=None, limit=25):
     """Return a list of dicts: {id, downloads, likes, model_type, verdict}."""
     from huggingface_hub import HfApi
     api = HfApi()
-    kw = {"limit": limit * 3, "sort": "downloads", "direction": -1,
-          "fetch_config": False, "full": False}
+    kw = {"limit": limit * 3, "sort": "downloads"}
     if family and family in FAMILY_TAGS:
         kw["filter"] = FAMILY_TAGS[family]
     elif query:
         kw["search"] = query
     else:
         kw["filter"] = "mixture-of-experts"
+    # be resilient across huggingface_hub versions: only pass kwargs the
+    # installed list_models actually accepts (e.g. 'direction' was removed).
+    import inspect
+    allowed = set(inspect.signature(api.list_models).parameters)
+    kw = {k: v for k, v in kw.items() if k in allowed}
 
     out = []
     for m in api.list_models(**kw):

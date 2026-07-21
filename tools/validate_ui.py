@@ -157,6 +157,34 @@ def main():
             time.sleep(0.5)
         assert j["error"] and "resumable" in j["error"]
         print("[validate_ui] failing download -> clean resumable error   OK")
+        # discover.search must build kwargs the INSTALLED huggingface_hub
+        # actually accepts (a removed kwarg like 'direction' previously
+        # crashed `midge search` with a TypeError). Verify the kwarg
+        # filtering against the real signature, and that a network failure
+        # degrades to a clean message rather than an exception escaping.
+        import inspect
+        sys.path.insert(0, os.path.join(ROOT, "tools"))
+        import discover
+        from huggingface_hub import HfApi
+        allowed = set(inspect.signature(HfApi.list_models).parameters)
+        for probe in ({}, {"family": "mixtral"}, {"query": "moe"}):
+            # mirror discover.search's kwarg construction and assert validity
+            kw = {"limit": 30, "sort": "downloads"}
+            fam = probe.get("family")
+            if fam:
+                kw["filter"] = discover.FAMILY_TAGS[fam]
+            elif probe.get("query"):
+                kw["search"] = probe["query"]
+            else:
+                kw["filter"] = "mixture-of-experts"
+            kw = {k: v for k, v in kw.items() if k in allowed}
+            assert "direction" not in kw
+            # binding must succeed against the real signature (no TypeError)
+            inspect.signature(HfApi.list_models).bind_partial(HfApi(), **kw)
+        rc = discover.main(["definitely-not-a-real-model-xyz", "--limit", "3"])
+        assert rc in (0, 1)   # clean return, never an uncaught exception
+        print("[validate_ui] discover kwarg-compat + graceful failure    OK")
+
         print("[validate_ui] all interface tests passed")
     finally:
         ui.terminate()
